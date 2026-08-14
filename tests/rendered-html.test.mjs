@@ -29,6 +29,8 @@ test("server-renders the Demolition workspace", async () => {
   assert.match(html, /Local SQLite library/);
   assert.match(html, /Bulk import/);
   assert.match(html, /Manage tags/);
+  assert.match(html, /Listen mode/);
+  assert.doesNotMatch(html, /out of 5 stars|Unrated/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|A little attention goes a long way/i);
 });
 
@@ -40,10 +42,11 @@ test("uses the local SQLite and managed-file backend", async () => {
     database.writeWorkspace({
       projects: [{ name: "Album", color: "blue", mood: "" }],
       demos: [{ id: 1, title: "Test 12.4.19", bpm: 120, key: "C", duration: "01:00", status: "unheard", tags: ["test"], note: "", nextAction: "", rating: 0, project: "Album", updatedAt: 1, creationDate: "2019-04-12" }],
-      orders: { Album: [1] }, media: []
+      orders: { Album: [1] }, media: [],
+      listens: [{ id: 2, demoId: 1, verdict: "up", note: "Strong chorus", listenedAt: 2 }]
     });
     const state = database.readWorkspace();
-    if (state.projects[0].name !== "Album" || state.tags[0].name !== "test" || state.demos[0].creationDate !== "2019-04-12" || state.orders.Album[0] !== 1) process.exit(1);
+    if (state.projects[0].name !== "Album" || state.tags[0].name !== "test" || state.demos[0].creationDate !== "2019-04-12" || state.orders.Album[0] !== 1 || state.listens[0].verdict !== "up" || state.listens[0].note !== "Strong chorus") process.exit(1);
   `;
   await run(process.execPath, ["--input-type=module", "-e", script], { cwd: temporaryDirectory });
 });

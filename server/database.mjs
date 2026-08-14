@@ -54,6 +54,15 @@ database.exec(`
     FOREIGN KEY (demo_id) REFERENCES demos(id) ON DELETE CASCADE
   );
 
+  CREATE TABLE IF NOT EXISTS listens (
+    id INTEGER PRIMARY KEY,
+    demo_id INTEGER NOT NULL,
+    verdict TEXT NOT NULL CHECK (verdict IN ('up', 'down')),
+    note TEXT NOT NULL DEFAULT '',
+    listened_at INTEGER NOT NULL,
+    FOREIGN KEY (demo_id) REFERENCES demos(id) ON DELETE CASCADE
+  );
+
   CREATE TABLE IF NOT EXISTS project_media (
     id INTEGER PRIMARY KEY,
     project TEXT NOT NULL,
@@ -81,6 +90,7 @@ database.exec(`
   CREATE INDEX IF NOT EXISTS idx_demos_status_updated ON demos(status, updated_at);
   CREATE INDEX IF NOT EXISTS idx_media_project_created ON project_media(project, created_at);
   CREATE INDEX IF NOT EXISTS idx_tracklist_project_position ON tracklist(project, position);
+  CREATE INDEX IF NOT EXISTS idx_listens_demo_listened ON listens(demo_id, listened_at DESC);
   PRAGMA optimize;
 `);
 
@@ -89,6 +99,7 @@ const listTags = database.prepare("SELECT name, created_at FROM tags ORDER BY na
 const listDemos = database.prepare("SELECT * FROM demos ORDER BY updated_at DESC");
 const listTracklist = database.prepare("SELECT project, demo_id, position FROM tracklist ORDER BY project, position");
 const listMedia = database.prepare("SELECT * FROM project_media ORDER BY created_at DESC");
+const listListens = database.prepare("SELECT * FROM listens ORDER BY listened_at DESC, id DESC");
 
 export function readWorkspace() {
   const projects = listProjects.all();
@@ -112,7 +123,11 @@ export function readWorkspace() {
     title: row.title, note: row.note, fileName: row.file_name ?? undefined,
     url: row.url ?? undefined, createdAt: Number(row.created_at),
   }));
-  return { projects, tags, demos, orders, media, empty: projects.length === 0 && tags.length === 0 && demos.length === 0 && media.length === 0 };
+  const listens = listListens.all().map((row) => ({
+    id: Number(row.id), demoId: Number(row.demo_id), verdict: row.verdict,
+    note: row.note, listenedAt: Number(row.listened_at),
+  }));
+  return { projects, tags, demos, orders, media, listens, empty: projects.length === 0 && tags.length === 0 && demos.length === 0 && media.length === 0 };
 }
 
 const insertProject = database.prepare("INSERT INTO projects (name, color, mood, position) VALUES (?, ?, ?, ?)");
@@ -123,11 +138,13 @@ const insertDemo = database.prepare(`
 `);
 const insertTrack = database.prepare("INSERT INTO tracklist (project, demo_id, position) VALUES (?, ?, ?)");
 const insertMedia = database.prepare("INSERT INTO project_media (id, project, kind, source, title, note, file_name, url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+const insertListen = database.prepare("INSERT INTO listens (id, demo_id, verdict, note, listened_at) VALUES (?, ?, ?, ?, ?)");
 
 export function writeWorkspace(payload) {
   const projects = Array.isArray(payload.projects) ? payload.projects : [];
   const demos = Array.isArray(payload.demos) ? payload.demos : [];
   const media = Array.isArray(payload.media) ? payload.media : [];
+  const listens = Array.isArray(payload.listens) ? payload.listens : [];
   const orders = payload.orders && typeof payload.orders === "object" ? payload.orders : {};
   const suppliedTags = Array.isArray(payload.tags) ? payload.tags : [];
   const tagMap = new Map();
@@ -144,7 +161,7 @@ export function writeWorkspace(payload) {
   const demoIds = new Set(demos.map((demo) => Number(demo.id)));
   database.exec("BEGIN IMMEDIATE");
   try {
-    database.exec("DELETE FROM tracklist; DELETE FROM project_media; DELETE FROM demos; DELETE FROM projects; DELETE FROM tags;");
+    database.exec("DELETE FROM tracklist; DELETE FROM project_media; DELETE FROM listens; DELETE FROM demos; DELETE FROM projects; DELETE FROM tags;");
     projects.forEach((project, position) => insertProject.run(project.name, project.color, project.mood ?? "", position));
     for (const tag of tagMap.values()) insertTag.run(tag.name, tag.createdAt);
     demos.forEach((demo) => insertDemo.run(
@@ -154,6 +171,11 @@ export function writeWorkspace(payload) {
       demo.checksum ?? null, demo.fileSize ?? null, demo.copyVerifiedAt ?? null, demo.creationDate ?? null,
     ));
     media.forEach((item) => insertMedia.run(item.id, item.project, item.kind, item.source, item.title, item.note ?? "", item.fileName ?? null, item.url ?? null, item.createdAt || Date.now()));
+    listens.forEach((listen) => {
+      if (demoIds.has(Number(listen.demoId)) && (listen.verdict === "up" || listen.verdict === "down")) {
+        insertListen.run(listen.id, listen.demoId, listen.verdict, listen.note ?? "", listen.listenedAt || Date.now());
+      }
+    });
     for (const [project, ids] of Object.entries(orders)) {
       if (!Array.isArray(ids)) continue;
       ids.forEach((id, position) => { if (demoIds.has(Number(id))) insertTrack.run(project, id, position); });

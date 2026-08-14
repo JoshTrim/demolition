@@ -14,7 +14,7 @@ type Demo = {
   tags: string[];
   note: string;
   nextAction: string;
-  rating: number;
+  rating?: number;
   project: string;
   updatedAt: number;
   audioName?: string;
@@ -25,6 +25,8 @@ type Demo = {
 };
 type Project = { name: string; color: "coral" | "yellow" | "blue" | "violet"; mood?: string };
 type TagDefinition = { name: string; createdAt: number };
+type ListenEvent = { id: number; demoId: number; verdict: "up" | "down"; note: string; listenedAt: number };
+type ListenStats = { up: number; down: number; score: number; count: number; lastAt?: number };
 type ProjectMedia = {
   id: number;
   project: string;
@@ -55,12 +57,12 @@ function apiUrl(path: string) {
 async function loadWorkspace() {
   const response = await fetch(apiUrl("/api/state"));
   if (!response.ok) throw new Error("The local database is unavailable");
-  return response.json() as Promise<{ demos: Demo[]; projects: Project[]; tags: TagDefinition[]; orders: Record<string, number[]>; media: ProjectMedia[]; empty: boolean }>;
+  return response.json() as Promise<{ demos: Demo[]; projects: Project[]; tags: TagDefinition[]; orders: Record<string, number[]>; media: ProjectMedia[]; listens: ListenEvent[]; empty: boolean }>;
 }
 
 let saveQueue: Promise<void> = Promise.resolve();
 
-function saveWorkspace(payload: { demos: Demo[]; projects: Project[]; tags: TagDefinition[]; orders: Record<string, number[]>; media: ProjectMedia[] }) {
+function saveWorkspace(payload: { demos: Demo[]; projects: Project[]; tags: TagDefinition[]; orders: Record<string, number[]>; media: ProjectMedia[]; listens: ListenEvent[] }) {
   const body = JSON.stringify(payload);
   saveQueue = saveQueue.catch(() => undefined).then(async () => {
     const response = await fetch(apiUrl("/api/state"), {
@@ -283,6 +285,7 @@ export default function Home() {
   const [projects, setProjects] = useState(initialProjects);
   const [tags, setTags] = useState<TagDefinition[]>([]);
   const [media, setMedia] = useState<ProjectMedia[]>([]);
+  const [listens, setListens] = useState<ListenEvent[]>([]);
   const [mediaUrls, setMediaUrls] = useState<Record<number, string>>({});
   const [orders, setOrders] = useState<Record<string, number[]>>({});
   const [view, setView] = useState<View>("library");
@@ -301,6 +304,7 @@ export default function Home() {
   const [rapidMode, setRapidMode] = useState(false);
   const [rapidIndex, setRapidIndex] = useState(0);
   const [rapidIds, setRapidIds] = useState<number[]>([]);
+  const [rapidNote, setRapidNote] = useState("");
   const [importNotice, setImportNotice] = useState("");
   const [detectingId, setDetectingId] = useState<number>();
   const [showEdit, setShowEdit] = useState(false);
@@ -311,7 +315,7 @@ export default function Home() {
   const [showMedia, setShowMedia] = useState(false);
   const [projectTab, setProjectTab] = useState<"tracklist" | "moodboard">("tracklist");
   const [search, setSearch] = useState("");
-  const [sortBy, setSortBy] = useState<"updated" | "created-new" | "created-old" | "title">("updated");
+  const [sortBy, setSortBy] = useState<"score" | "updated" | "created-new" | "created-old" | "title">("updated");
   const [audioUrl, setAudioUrl] = useState<string>();
   const [ready, setReady] = useState(false);
   const [draggedId, setDraggedId] = useState<number>();
@@ -340,6 +344,7 @@ export default function Home() {
             projects: Array.isArray(legacy.projects) ? legacy.projects : [],
             tags: Array.isArray(legacy.tags) ? legacy.tags : [],
             media: Array.isArray(legacy.media) ? legacy.media : [],
+            listens: Array.isArray(legacy.listens) ? legacy.listens : [],
             orders: legacy.orders && typeof legacy.orders === "object" ? legacy.orders : {},
           };
           legacyData.tags = mergeTags(legacyData.tags, legacyData.demos.flatMap((demo) => demo.tags));
@@ -374,6 +379,7 @@ export default function Home() {
         setProjects(data.projects);
         setTags(mergeTags(data.tags ?? [], data.demos.flatMap((demo) => demo.tags)));
         setMedia(data.media);
+        setListens(data.listens ?? []);
         setOrders(data.orders);
         setSelectedId(data.demos[0]?.id ?? 1);
         setReady(true);
@@ -389,12 +395,12 @@ export default function Home() {
   useEffect(() => {
     if (!ready) return;
     const timeout = window.setTimeout(() => {
-      saveWorkspace({ demos, projects, tags, orders, media }).catch(() => {
+      saveWorkspace({ demos, projects, tags, orders, media, listens }).catch(() => {
         setImportNotice("Changes could not be saved to SQLite. Check that the local server is running.");
       });
     }, 250);
     return () => window.clearTimeout(timeout);
-  }, [demos, projects, tags, orders, media, ready]);
+  }, [demos, projects, tags, orders, media, listens, ready]);
 
   useEffect(() => {
     let currentUrl: string | undefined;
@@ -428,6 +434,20 @@ export default function Home() {
     };
   }, [media, project, projectTab, view]);
 
+  const listenStats = useMemo(() => {
+    const stats = new Map<number, ListenStats>();
+    for (const listen of listens) {
+      const current = stats.get(listen.demoId) ?? { up: 0, down: 0, score: 0, count: 0 };
+      if (listen.verdict === "up") current.up++;
+      else current.down++;
+      current.score = current.up - current.down;
+      current.count++;
+      current.lastAt = Math.max(current.lastAt ?? 0, listen.listenedAt);
+      stats.set(listen.demoId, current);
+    }
+    return stats;
+  }, [listens]);
+  const statsFor = (demoId: number) => listenStats.get(demoId) ?? { up: 0, down: 0, score: 0, count: 0 };
   const selected = demos.find((demo) => demo.id === selectedId) ?? demos[0];
   const revisitDemos = useMemo(() => demos.filter((demo) => demo.status === "revisit" || demo.status === "unheard").sort((a, b) => a.updatedAt - b.updatedAt), [demos]);
   const inProjects = demos.filter((demo) => demo.project !== "Unsorted").length;
@@ -437,6 +457,10 @@ export default function Home() {
   const projectOrder = orders[project] ?? [];
   const projectCandidates = demos.filter((demo) => demo.project === project && !projectOrder.includes(demo.id));
   const rapidDemo = demos.find((demo) => demo.id === rapidIds[rapidIndex]);
+  const selectedStats = selected ? statsFor(selected.id) : statsFor(0);
+  const selectedListens = selected ? listens.filter((listen) => listen.demoId === selected.id).slice(0, 5) : [];
+  const rapidStats = rapidDemo ? statsFor(rapidDemo.id) : statsFor(0);
+  const selectedListenHistory = selectedListens.length > 0 ? <div className="listen-history"><span className="eyebrow">RECENT LISTENS</span>{selectedListens.map((listen) => <div className={`listen-event ${listen.verdict}`} key={listen.id}><b>{listen.verdict === "up" ? "↑" : "↓"}</b><span>{listen.note || "No note"}<small>{new Date(listen.listenedAt).toLocaleDateString("en-AU")}</small></span></div>)}</div> : null;
   const storagePercent = storageInfo.quota ? Math.min(100, storageInfo.usage / storageInfo.quota * 100) : 0;
 
   const visibleDemos = useMemo(() => {
@@ -459,6 +483,11 @@ export default function Home() {
       });
     } else if (view !== "revisit") {
       result = [...result].sort((a, b) => {
+        if (sortBy === "score") {
+          const aStats = listenStats.get(a.id) ?? { up: 0, down: 0, score: 0, count: 0 };
+          const bStats = listenStats.get(b.id) ?? { up: 0, down: 0, score: 0, count: 0 };
+          return bStats.score - aStats.score || bStats.up - aStats.up || aStats.down - bStats.down || a.title.localeCompare(b.title);
+        }
         if (sortBy === "title") return a.title.localeCompare(b.title);
         if (sortBy === "updated") return b.updatedAt - a.updatedAt;
         const aDate = a.creationDate ? Date.parse(`${a.creationDate}T00:00:00Z`) : undefined;
@@ -470,7 +499,7 @@ export default function Home() {
       });
     }
     return result;
-  }, [demos, project, filter, tagFilter, search, view, orders, sortBy]);
+  }, [demos, project, filter, tagFilter, search, view, orders, sortBy, listenStats]);
 
   function selectProject(name: string) {
     setProject(name);
@@ -550,7 +579,7 @@ export default function Home() {
       status: String(form.get("status")) as Status, project: nextProject,
       tags: nextTags,
       note: String(form.get("note")), nextAction: String(form.get("nextAction")),
-      rating: Number(form.get("rating")), updatedAt: Date.now(),
+      updatedAt: Date.now(),
     } : demo));
     if (previousProject !== nextProject) setOrders((current) => ({
       ...current,
@@ -681,36 +710,44 @@ export default function Home() {
   }
 
   function startRapidListen() {
-    const ids = [...demos].sort((a, b) => a.updatedAt - b.updatedAt).map((demo) => demo.id);
-    if (!ids.length) { window.alert("Import some demos before starting a listening session."); return; }
+    const ids = [...demos].sort((a, b) => {
+      const aStats = statsFor(a.id);
+      const bStats = statsFor(b.id);
+      return aStats.count - bStats.count || (aStats.lastAt ?? 0) - (bStats.lastAt ?? 0) || a.updatedAt - b.updatedAt;
+    }).map((demo) => demo.id);
+    if (!ids.length) { window.alert("Import some demos before starting listen mode."); return; }
     setRapidIds(ids);
     setRapidIndex(0);
+    setRapidNote("");
     setSelectedId(ids[0]);
     setRapidMode(true);
   }
 
-  function advanceRapid(status?: Status) {
+  function advanceRapid() {
     if (!rapidDemo) return;
-    if (status) setDemos((current) => current.map((demo) => demo.id === rapidDemo.id ? { ...demo, status, updatedAt: Date.now() } : demo));
     const nextIndex = rapidIndex + 1;
     if (nextIndex >= rapidIds.length) {
       setRapidMode(false);
-      setImportNotice(`Listening session complete · ${rapidIds.length} ${rapidIds.length === 1 ? "demo" : "demos"} reviewed.`);
+      setImportNotice("Listening round complete.");
       return;
     }
+    setRapidNote("");
     setRapidIndex(nextIndex);
     setSelectedId(rapidIds[nextIndex]);
   }
 
-  function updateRapidDemo(changes: Partial<Demo>) {
+  function recordListen(verdict: "up" | "down") {
     if (!rapidDemo) return;
-    setDemos((current) => current.map((demo) => demo.id === rapidDemo.id ? { ...demo, ...changes, updatedAt: Date.now() } : demo));
+    const listenedAt = Date.now();
+    const id = listenedAt * 1000 + Math.floor(Math.random() * 1000);
+    setListens((current) => [{ id, demoId: rapidDemo.id, verdict, note: rapidNote.trim(), listenedAt }, ...current]);
+    advanceRapid();
   }
 
   function changeRapidProject(nextProject: string) {
     if (!rapidDemo) return;
     const previousProject = rapidDemo.project;
-    updateRapidDemo({ project: nextProject });
+    setDemos((current) => current.map((demo) => demo.id === rapidDemo.id ? { ...demo, project: nextProject, updatedAt: Date.now() } : demo));
     if (previousProject !== nextProject) setOrders((current) => ({ ...current, [previousProject]: (current[previousProject] ?? []).filter((id) => id !== rapidDemo.id) }));
   }
 
@@ -854,7 +891,7 @@ export default function Home() {
   }
 
   function exportBackup() {
-    const payload = JSON.stringify({ version: 4, exportedAt: new Date().toISOString(), demos, projects, tags, orders, media }, null, 2);
+    const payload = JSON.stringify({ version: 5, exportedAt: new Date().toISOString(), demos, projects, tags, orders, media, listens }, null, 2);
     const url = URL.createObjectURL(new Blob([payload], { type: "application/json" }));
     const anchor = document.createElement("a");
     anchor.href = url;
@@ -870,7 +907,7 @@ export default function Home() {
       const data = JSON.parse(await file.text());
       if (!Array.isArray(data.demos) || !Array.isArray(data.projects)) throw new Error("Invalid backup");
       const restoredTags = mergeTags(Array.isArray(data.tags) ? data.tags : [], data.demos.flatMap((demo: Demo) => demo.tags));
-      setDemos(data.demos); setProjects(data.projects); setTags(restoredTags); setOrders(data.orders ?? {}); setMedia(data.media ?? []);
+      setDemos(data.demos); setProjects(data.projects); setTags(restoredTags); setOrders(data.orders ?? {}); setMedia(data.media ?? []); setListens(data.listens ?? []);
       setSelectedId(data.demos[0]?.id ?? 1); setProject("All demos"); setView("library");
     } catch { window.alert("That file is not a valid Demolition backup."); }
     event.target.value = "";
@@ -890,7 +927,7 @@ export default function Home() {
           <button onClick={exportBackup} className="nav-item"><span>⇩</span> Export backup</button>
           <button onClick={() => importRef.current?.click()} className="nav-item"><span>⇧</span> Restore backup</button>
           <button onClick={() => { setDetectProgress(""); setShowBulkDetect(true); }} className="nav-item"><span>⌁</span> Detect BPM <b>{demos.filter((demo) => !demo.bpm).length}</b></button>
-          <button onClick={startRapidListen} className="nav-item"><span>▶</span> Listening session</button>
+          <button onClick={startRapidListen} className="nav-item"><span>▶</span> Listen mode</button>
           <button onClick={() => { setStorageProgress(""); refreshStorageInfo().catch(() => undefined); setShowStorage(true); }} className="nav-item"><span>◈</span> Storage health</button>
           <input ref={importRef} className="sr-only" type="file" accept="application/json" onChange={importBackup} />
         </nav>
@@ -929,17 +966,17 @@ export default function Home() {
           </section> : <>
           <div className="section-heading"><div><h2>{currentTitle}</h2><span className="muted">{view === "project" ? "Drag rows to reorder the tracklist." : view === "revisit" ? "Demos marked Unheard or Revisit, sorted oldest first." : "Filter, search, and sort your demos."}</span></div><span className="saved-note">{ready ? "✓ Changes saved locally" : "Loading your library…"}</span></div>
           <div className={`workspace-grid ${view === "project" && project !== "Unsorted" ? "project-workspace" : ""}`}>
-            <div className="demo-panel" onDragOver={(event) => { if (view === "project") event.preventDefault(); }} onDrop={() => { if (view === "project") dropOnTracklist(); }}><div className="filter-row"><div className="filters">{["All", "Unheard", "Revisit", "Shaping", "Finished"].map((item) => <button key={item} onClick={() => setFilter(item)} className={filter === item ? "filter-active" : ""}>{item}</button>)}</div><div className="filter-tools"><select className="tag-select" value={tagFilter} onChange={(event) => setTagFilter(event.target.value)} aria-label="Filter by tag"><option>All tags</option>{tags.map((tag) => <option key={tag.name}>{tag.name}</option>)}</select>{view === "project" ? <span className="sort-button">↕ Drag to reorder</span> : <select className="sort-select" value={sortBy} onChange={(event) => setSortBy(event.target.value as typeof sortBy)} aria-label="Sort demos"><option value="updated">Recently updated</option><option value="created-new">Creation date · newest</option><option value="created-old">Creation date · oldest</option><option value="title">Title · A–Z</option></select>}</div></div><div className="demo-table"><div className="table-head"><span>{view === "project" ? "TRACK / DEMO" : "DEMO"}</span><span>DETAILS</span><span>STATUS</span><span>UPDATED</span><span /></div>{visibleDemos.map((demo, index) => <button key={demo.id} draggable={view === "project"} onDragStart={() => setDraggedId(demo.id)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.stopPropagation(); dropOnTracklist(demo.id); }} onClick={() => setSelectedId(demo.id)} className={`demo-row ${selectedId === demo.id ? "row-selected" : ""}`}><span className="demo-name">{view === "project" && <b className="track-number">{String(index + 1).padStart(2, "0")}</b>}<span className={`cover cover-${demo.id % 4}`}><i /></span><span><strong>{demo.title}</strong><small>{demo.creationDate && <b className="date-tag">{formatCreationDate(demo.creationDate)}</b>}{demo.tags.join("  ·  ")}{demo.audioName ? "  ·  audio linked" : ""}</small></span></span><span className="details">{demo.bpm ? `${demo.bpm} BPM` : "BPM —"} <i>·</i> {demo.key} <i>·</i> {demo.duration}</span><span><b className={`status ${demo.status}`}>{statusLabels[demo.status]}</b></span><span className="updated">{relativeDate(demo.updatedAt)}</span><span className="row-arrow">→</span></button>)}</div>{visibleDemos.length === 0 && (view === "project" ? <div className="empty-state tracklist-empty">Drag candidates here to begin the tracklist.</div> : demos.length === 0 ? <div className="empty-state library-empty"><span>✳</span><strong>Your library is empty</strong><p>Choose a folder of demo bounces to start building your archive.</p><button onClick={() => { setBulkProgress(""); setShowBulk(true); }}>＋ Import your demos</button></div> : <div className="empty-state">No demos match this view.</div>)}</div>
+            <div className="demo-panel" onDragOver={(event) => { if (view === "project") event.preventDefault(); }} onDrop={() => { if (view === "project") dropOnTracklist(); }}><div className="filter-row"><div className="filters">{["All", "Unheard", "Revisit", "Shaping", "Finished"].map((item) => <button key={item} onClick={() => setFilter(item)} className={filter === item ? "filter-active" : ""}>{item}</button>)}</div><div className="filter-tools"><select className="tag-select" value={tagFilter} onChange={(event) => setTagFilter(event.target.value)} aria-label="Filter by tag"><option>All tags</option>{tags.map((tag) => <option key={tag.name}>{tag.name}</option>)}</select>{view === "project" ? <span className="sort-button">↕ Drag to reorder</span> : <select className="sort-select" value={sortBy} onChange={(event) => setSortBy(event.target.value as typeof sortBy)} aria-label="Sort demos"><option value="score">Score · highest</option><option value="updated">Recently updated</option><option value="created-new">Creation date · newest</option><option value="created-old">Creation date · oldest</option><option value="title">Title · A–Z</option></select>}</div></div><div className="demo-table"><div className="table-head"><span>{view === "project" ? "TRACK / DEMO" : "DEMO"}</span><span>DETAILS</span><span>STATUS</span><span>UPDATED</span><span /></div>{visibleDemos.map((demo, index) => <button key={demo.id} draggable={view === "project"} onDragStart={() => setDraggedId(demo.id)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.stopPropagation(); dropOnTracklist(demo.id); }} onClick={() => setSelectedId(demo.id)} className={`demo-row ${selectedId === demo.id ? "row-selected" : ""}`}><span className="demo-name">{view === "project" && <b className="track-number">{String(index + 1).padStart(2, "0")}</b>}<span className={`cover cover-${demo.id % 4}`}><i /></span><span><strong>{demo.title}</strong><small>{demo.creationDate && <b className="date-tag">{formatCreationDate(demo.creationDate)}</b>}{demo.tags.join("  ·  ")}{demo.audioName ? "  ·  audio linked" : ""}</small></span></span><span className="details">{demo.bpm ? `${demo.bpm} BPM` : "BPM —"} <i>·</i> {demo.key} <i>·</i> {demo.duration} <i>·</i> Score {statsFor(demo.id).score > 0 ? `+${statsFor(demo.id).score}` : statsFor(demo.id).score}</span><span><b className={`status ${demo.status}`}>{statusLabels[demo.status]}</b></span><span className="updated">{relativeDate(demo.updatedAt)}</span><span className="row-arrow">→</span></button>)}</div>{visibleDemos.length === 0 && (view === "project" ? <div className="empty-state tracklist-empty">Drag candidates here to begin the tracklist.</div> : demos.length === 0 ? <div className="empty-state library-empty"><span>✳</span><strong>Your library is empty</strong><p>Choose a folder of demo bounces to start building your archive.</p><button onClick={() => { setBulkProgress(""); setShowBulk(true); }}>＋ Import your demos</button></div> : <div className="empty-state">No demos match this view.</div>)}</div>
 
             {view === "project" && project !== "Unsorted" && <aside className="candidate-panel" onDragOver={(event) => event.preventDefault()} onDrop={dropInCandidatePool}><div className="candidate-head"><div><span className="eyebrow">CANDIDATE POOL</span><h3>{projectCandidates.length} candidate {projectCandidates.length === 1 ? "track" : "tracks"}</h3></div><span>Drag into tracklist →</span></div><div className="candidate-list">{projectCandidates.map((demo) => <div key={demo.id} className="candidate-row" draggable onDragStart={() => setDraggedId(demo.id)}><button onClick={() => setSelectedId(demo.id)}><span className={`cover cover-${demo.id % 4}`}><i /></span><span><strong>{demo.title}</strong><small>{demo.bpm ? `${demo.bpm} BPM` : "BPM unknown"} · {statusLabels[demo.status]}</small></span></button><button className="promote-button" onClick={() => setOrders((current) => ({ ...current, [project]: [...(current[project] ?? []).filter((id) => id !== demo.id), demo.id] }))} aria-label={`Add ${demo.title} to tracklist`}>＋</button></div>)}{projectCandidates.length === 0 && <div className="candidate-empty"><span>✓</span><strong>No candidates</strong><small>Import demos here or drag a track out of the tracklist.</small></div>}</div><div className="candidate-drop">← Drop here to return a track to the pool</div></aside>}
 
-            {selected && (view !== "project" || project === "Unsorted") && <aside className="detail-panel"><div className="detail-top"><span className="eyebrow">SELECTED DEMO</span><button className="more-button" onClick={openEdit}>Edit</button></div><div className={`focus-cover cover-${selected.id % 4}`}><span>✳</span></div><h3>{selected.title}</h3><div className="focus-meta">{selected.bpm ? `${selected.bpm} BPM` : "BPM —"} <i>·</i> {selected.key} <i>·</i> {selected.duration}</div><button className="detect-bpm" disabled={detectingId === selected.id} onClick={detectSelectedBpm}>{detectingId === selected.id ? "◌ Analyzing tempo…" : "⌁ Detect BPM again"}</button><div className="rating" aria-label={`${selected.rating} out of 5 stars`}>{[1,2,3,4,5].map((star) => <span key={star} className={star <= selected.rating ? "rated" : ""}>★</span>)}</div>{audioUrl ? <><audio className="audio-player" src={audioUrl} controls preload="metadata"><track kind="captions" src="data:text/vtt,WEBVTT" srcLang="en" label="Instrumental audio" /></audio><button className="remove-copy" onClick={removeSelectedAudioCopy}>Remove local copy</button></> : <button className="audio-empty" onClick={() => attachRef.current?.click()}><span>＋</span> Attach an audio bounce</button>}<input ref={attachRef} className="sr-only" type="file" accept="audio/*,.wav,.aif,.aiff,.mp3,.m4a,.flac" onChange={attachAudio} /><div className="detail-section"><div className="detail-section-head"><span>NEXT ACTION</span><button onClick={openEdit}>edit</button></div><p className="next-action">→ {selected.nextAction || "No next action set"}</p></div><div className="detail-section"><div className="detail-section-head"><span>NOTES</span><button onClick={openEdit}>edit</button></div><p>{selected.note || "No notes yet."}</p></div><div className="detail-section"><div className="detail-section-head"><span>PROJECT</span><button onClick={openEdit}>change</button></div><div className="assigned-project"><span className="project-dot coral" />{selected.project}<span>↗</span></div></div><button className="open-demo" onClick={openEdit}>Edit demo <span>↗</span></button></aside>}
+            {selected && (view !== "project" || project === "Unsorted") && <aside className="detail-panel"><div className="detail-top"><span className="eyebrow">SELECTED DEMO</span><button className="more-button" onClick={openEdit}>Edit</button></div><div className={`focus-cover cover-${selected.id % 4}`}><span>✳</span></div><h3>{selected.title}</h3><div className="focus-meta">{selected.bpm ? `${selected.bpm} BPM` : "BPM —"} <i>·</i> {selected.key} <i>·</i> {selected.duration}</div><button className="detect-bpm" disabled={detectingId === selected.id} onClick={detectSelectedBpm}>{detectingId === selected.id ? "◌ Analyzing tempo…" : "⌁ Detect BPM again"}</button><div className="listen-summary" aria-label={"Listen score " + selectedStats.score}><span><b>{selectedStats.up}</b> ↑</span><span><b>{selectedStats.down}</b> ↓</span><strong>{selectedStats.score > 0 ? "+" + selectedStats.score : selectedStats.score}</strong><small>{selectedStats.count} {selectedStats.count === 1 ? "listen" : "listens"}</small></div>{selectedListenHistory}{audioUrl ? <><audio className="audio-player" src={audioUrl} controls preload="metadata"><track kind="captions" src="data:text/vtt,WEBVTT" srcLang="en" label="Instrumental audio" /></audio><button className="remove-copy" onClick={removeSelectedAudioCopy}>Remove local copy</button></> : <button className="audio-empty" onClick={() => attachRef.current?.click()}><span>＋</span> Attach an audio bounce</button>}<input ref={attachRef} className="sr-only" type="file" accept="audio/*,.wav,.aif,.aiff,.mp3,.m4a,.flac" onChange={attachAudio} /><div className="detail-section"><div className="detail-section-head"><span>NEXT ACTION</span><button onClick={openEdit}>edit</button></div><p className="next-action">→ {selected.nextAction || "No next action set"}</p></div><div className="detail-section"><div className="detail-section-head"><span>NOTES</span><button onClick={openEdit}>edit</button></div><p>{selected.note || "No notes yet."}</p></div><div className="detail-section"><div className="detail-section-head"><span>PROJECT</span><button onClick={openEdit}>change</button></div><div className="assigned-project"><span className="project-dot coral" />{selected.project}<span>↗</span></div></div><button className="open-demo" onClick={openEdit}>Edit demo <span>↗</span></button></aside>}
           </div></>}
           <div className="bottom-note"><span className="spark">✳</span><span><strong>{revisitDemos.length} demos in the review queue.</strong> Sorted by oldest update.</span><button onClick={() => { setView("revisit"); setProject("All demos"); }}>Open revisit queue →</button></div>
         </div>
       </section>
 
-      {rapidMode && rapidDemo && <div className="rapid-backdrop"><section className="rapid-session" aria-label="Rapid listening session"><header><div><span className="eyebrow">LISTENING SESSION</span><strong>{rapidIndex + 1} / {rapidIds.length}</strong></div><button onClick={() => setRapidMode(false)} aria-label="End listening session">×</button></header><div className="rapid-body"><div className={`rapid-art cover-${rapidDemo.id % 4}`}><span>✳</span></div><div className="rapid-main"><div className="rapid-title"><div><h2>{rapidDemo.title}</h2><p>{rapidDemo.bpm ? `${rapidDemo.bpm} BPM` : "BPM unknown"} · {rapidDemo.key} · {rapidDemo.duration}</p></div><select aria-label="Assign project" value={rapidDemo.project} onChange={(event) => changeRapidProject(event.target.value)}>{projectNames.map((name) => <option key={name}>{name}</option>)}</select></div>{audioUrl ? <audio ref={rapidAudioRef} className="rapid-player" src={audioUrl} controls preload="metadata"><track kind="captions" src="data:text/vtt,WEBVTT" srcLang="en" label="Demo audio" /></audio> : <div className="rapid-no-audio">No local audio copy attached</div>}<div className="rapid-rating"><span>Rating</span><div>{[1,2,3,4,5].map((rating) => <button key={rating} onClick={() => updateRapidDemo({ rating })} className={rating <= rapidDemo.rating ? "rated" : ""} aria-label={`${rating} stars`}>★</button>)}</div></div><label className="rapid-note">Listening note<textarea key={rapidDemo.id} defaultValue={rapidDemo.note} onBlur={(event) => updateRapidDemo({ note: event.target.value })} rows={3} placeholder="Add a short note" /></label><label className="rapid-next">Next action<input key={`next-${rapidDemo.id}`} defaultValue={rapidDemo.nextAction} onBlur={(event) => updateRapidDemo({ nextAction: event.target.value })} placeholder="Add a specific next action" /></label></div></div><footer><button className="rapid-skip" onClick={() => advanceRapid()}>Skip for now</button><div><button className="rapid-revisit" onClick={() => advanceRapid("revisit")}>Revisit</button><button className="rapid-shaping" onClick={() => advanceRapid("shaping")}>Keep shaping</button><button className="rapid-finished" onClick={() => advanceRapid("finished")}>Finished</button></div></footer></section></div>}
+      {rapidMode && rapidDemo && <div className="rapid-backdrop"><section className="rapid-session" aria-label="Listen mode"><header><div><span className="eyebrow">LISTEN MODE</span><strong>{rapidIndex + 1} / {rapidIds.length}</strong></div><button onClick={() => setRapidMode(false)} aria-label="End listen mode">×</button></header><div className="rapid-body"><div className={`rapid-art cover-${rapidDemo.id % 4}`}><span>✳</span></div><div className="rapid-main"><div className="rapid-title"><div><h2>{rapidDemo.title}</h2><p>{rapidDemo.bpm ? `${rapidDemo.bpm} BPM` : "BPM unknown"} · {rapidDemo.key} · {rapidDemo.duration}</p></div><select aria-label="Assign project" value={rapidDemo.project} onChange={(event) => changeRapidProject(event.target.value)}>{projectNames.map((name) => <option key={name}>{name}</option>)}</select></div>{audioUrl ? <audio ref={rapidAudioRef} className="rapid-player" src={audioUrl} controls preload="metadata"><track kind="captions" src="data:text/vtt,WEBVTT" srcLang="en" label="Demo audio" /></audio> : <div className="rapid-no-audio">No local audio copy attached</div>}<div className="rapid-vote-summary"><span>{rapidStats.up} up</span><span>{rapidStats.down} down</span><strong>Score {rapidStats.score > 0 ? `+${rapidStats.score}` : rapidStats.score}</strong></div><label className="rapid-note">Note for this listen<textarea value={rapidNote} onChange={(event) => setRapidNote(event.target.value)} rows={3} placeholder="Optional note saved with your vote" /></label></div></div><footer><button className="rapid-skip" onClick={advanceRapid}>Skip</button><div className="rapid-vote-buttons"><button className="thumb-down" onClick={() => recordListen("down")}><span>↓</span> Thumbs down</button><button className="thumb-up" onClick={() => recordListen("up")}><span>↑</span> Thumbs up</button></div></footer></section></div>}
 
       {showStorage && <div className="modal-backdrop"><section className="modal storage-modal" aria-label="Storage health"><button type="button" className="modal-close" onClick={() => setShowStorage(false)}>×</button><div className="eyebrow">STORAGE HEALTH</div><h2>Storage status</h2><p>Metadata is stored in SQLite. Audio and moodboard files are copied into Demolition’s local data folder.</p><div className="storage-meter"><div><strong>{formatBytes(storageInfo.usage)}</strong><span>used · {formatBytes(Math.max(0, storageInfo.quota - storageInfo.usage))} free</span></div><b>{Math.round(storagePercent)}%</b><div className="storage-bar"><span style={{ width: `${storagePercent}%` }} /></div></div><div className="health-grid"><div className="health-good"><span>✓</span><strong>Local persistent storage</strong><small>The database and managed copies remain on this machine.</small><button onClick={requestPersistentStorage}>Refresh status</button></div><div className="health-good"><span>♢</span><strong>{demos.filter((demo) => demo.checksum).length} checksummed copies</strong><small>SHA-256 fingerprints detect duplicates and unexpected byte changes.</small><button onClick={verifyAudioCopies}>Verify all copies</button></div></div>{storageProgress && <div className="storage-result" role="status">{storageProgress.startsWith("Verifying") ? <i /> : <span>✓</span>}<p>{storageProgress}</p></div>}<div className="backup-clarity"><strong>Metadata backup ≠ audio backup</strong><p>Export Backup preserves your catalogue, projects, notes, and checksums. Your original music files remain the authoritative audio backup.</p></div><button className="primary-button modal-submit" onClick={() => setShowStorage(false)}>Done</button></section></div>}
 
@@ -949,7 +986,7 @@ export default function Home() {
 
       {showAdd && <div className="modal-backdrop"><form className="modal" onSubmit={addDemo}><button type="button" className="modal-close" onClick={() => setShowAdd(false)}>×</button><div className="eyebrow">IMPORT DEMO</div><h2>Import one demo</h2><p>Choose an audio file. Demolition creates a managed local copy, detects its BPM, and leaves the original untouched.</p><label className="file-drop">Audio file<input name="audio" type="file" accept="audio/*,.wav,.aif,.aiff,.mp3,.m4a,.flac" /><span>Read-only source · managed local copy</span></label><label>Demo title<input name="title" placeholder="Uses the filename if left blank" /></label><div className="modal-fields"><label>BPM<input name="bpm" type="number" placeholder="Auto detect" /></label><label>Key<input name="key" defaultValue="C maj" /></label></div><label>Project<select name="project" defaultValue={project !== "All demos" ? project : "Unsorted"}>{projectNames.map((name) => <option key={name}>{name}</option>)}</select></label><label>Tags<input name="tags" list="known-tags" placeholder="e.g. April exports, laptop sessions" /><span className="field-hint">Comma separated</span></label><button className="primary-button modal-submit" type="submit">Import safe copy <span>→</span></button></form></div>}
 
-      {showEdit && selected && <div className="modal-backdrop"><form className="modal edit-modal" onSubmit={editDemo}><button type="button" className="modal-close" onClick={() => setShowEdit(false)}>×</button><div className="eyebrow">EDIT DEMO</div><h2>{selected.title}</h2><div className="modal-fields"><label>Title<input name="title" defaultValue={selected.title} required /></label><label>Status<select name="status" defaultValue={selected.status}>{Object.entries(statusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label>BPM<input name="bpm" type="number" defaultValue={selected.bpm} /></label><label>Key<input name="key" defaultValue={selected.key} /></label><label>Project<select name="project" defaultValue={selected.project}>{projectNames.map((name) => <option key={name}>{name}</option>)}</select></label><label>Rating<select name="rating" defaultValue={selected.rating}>{[0,1,2,3,4,5].map((rating) => <option key={rating} value={rating}>{rating === 0 ? "Unrated" : `${rating} / 5`}</option>)}</select></label></div><label>Creation date<input name="creationDate" type="date" defaultValue={selected.creationDate} /><span className="field-hint">Extracted from the title when possible; editable anytime.</span></label><label>Tags<input value={editTagsDraft} onChange={(event) => setEditTagsDraft(event.target.value)} placeholder="Type tags separated by commas" /></label>{tags.length > 0 && <div className="tag-picker" aria-label="Available tags">{tags.map((tag) => <button key={tag.name} type="button" className={parseTags(editTagsDraft).some((item) => item.toLocaleLowerCase() === tag.name.toLocaleLowerCase()) ? "selected" : ""} onClick={() => toggleEditTag(tag.name)}>#{tag.name}</button>)}</div>}<label>Next action<input name="nextAction" defaultValue={selected.nextAction} placeholder="One concrete thing to try" /></label><label>Listening notes<textarea name="note" defaultValue={selected.note} rows={4} /></label><button className="primary-button modal-submit" type="submit">Save changes <span>→</span></button></form></div>}
+      {showEdit && selected && <div className="modal-backdrop"><form className="modal edit-modal" onSubmit={editDemo}><button type="button" className="modal-close" onClick={() => setShowEdit(false)}>×</button><div className="eyebrow">EDIT DEMO</div><h2>{selected.title}</h2><div className="modal-fields"><label>Title<input name="title" defaultValue={selected.title} required /></label><label>Status<select name="status" defaultValue={selected.status}>{Object.entries(statusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label>BPM<input name="bpm" type="number" defaultValue={selected.bpm} /></label><label>Key<input name="key" defaultValue={selected.key} /></label><label>Project<select name="project" defaultValue={selected.project}>{projectNames.map((name) => <option key={name}>{name}</option>)}</select></label></div><label>Creation date<input name="creationDate" type="date" defaultValue={selected.creationDate} /><span className="field-hint">Extracted from the title when possible; editable anytime.</span></label><label>Tags<input value={editTagsDraft} onChange={(event) => setEditTagsDraft(event.target.value)} placeholder="Type tags separated by commas" /></label>{tags.length > 0 && <div className="tag-picker" aria-label="Available tags">{tags.map((tag) => <button key={tag.name} type="button" className={parseTags(editTagsDraft).some((item) => item.toLocaleLowerCase() === tag.name.toLocaleLowerCase()) ? "selected" : ""} onClick={() => toggleEditTag(tag.name)}>#{tag.name}</button>)}</div>}<label>Next action<input name="nextAction" defaultValue={selected.nextAction} placeholder="One concrete thing to try" /></label><label>Listening notes<textarea name="note" defaultValue={selected.note} rows={4} /></label><button className="primary-button modal-submit" type="submit">Save changes <span>→</span></button></form></div>}
 
       {showTags && <div className="modal-backdrop"><section className="modal tags-modal" aria-label="Manage tags"><button type="button" className="modal-close" onClick={() => setShowTags(false)}>×</button><div className="eyebrow">TAGS</div><h2>Manage tags</h2><p>Create reusable tags for demo batches, sessions, locations, or any other grouping.</p><form className="tag-create" onSubmit={addCustomTag}><input name="name" placeholder="Tag name" aria-label="New tag name" required /><button className="primary-button" type="submit">Add tag</button></form><div className="tag-manager-list">{tags.map((tag) => { const count = demos.filter((demo) => demo.tags.some((item) => item.toLocaleLowerCase() === tag.name.toLocaleLowerCase())).length; return <div key={tag.name}><button className="tag-filter-link" onClick={() => { setTagFilter(tag.name); setShowTags(false); setProject("All demos"); setView("library"); }}>#{tag.name}<span>{count} {count === 1 ? "demo" : "demos"}</span></button><button className="tag-delete" onClick={() => removeCustomTag(tag.name)} aria-label={`Delete ${tag.name}`}>×</button></div>; })}{tags.length === 0 && <div className="tag-manager-empty">No tags created.</div>}</div></section></div>}
 
