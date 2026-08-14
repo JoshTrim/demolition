@@ -194,6 +194,23 @@ button, input, select, textarea { font:inherit; } button { cursor:pointer; }
 .sort-select:focus { border-color:#596347; }
 .date-tag { display:inline-block; margin-right:7px; padding:2px 5px; color:#b7c991; background:#2a3023; border-radius:3px; font-size:8px; font-weight:500; }
 .field-hint { display:block; margin-top:6px; color:#6f6f68; text-transform:none; letter-spacing:0; font-size:8px; }
+.filter-tools { display:flex; align-items:center; gap:7px; flex:none; }
+.tag-select { max-width:145px; padding:6px 26px 6px 8px; color:#aaa89f; background:#242520; border:1px solid #3b3d36; border-radius:4px; outline:0; font-size:9px; }
+.tag-select:focus { border-color:#596347; }
+.tag-picker { margin:-7px 0 15px; display:flex; flex-wrap:wrap; gap:6px; }
+.tag-picker button { padding:6px 8px; color:#89887f; background:#1d1e1a; border:1px solid #393b34; border-radius:20px; font-size:9px; }
+.tag-picker button.selected { color:#1d2018; background:var(--lime); border-color:var(--lime); }
+.tags-modal { width:min(500px,100%); }
+.tag-create { display:grid; grid-template-columns:1fr auto; gap:8px; margin-bottom:18px; }
+.tag-create input { margin:0; }
+.tag-create button { min-width:90px; }
+.tag-manager-list { max-height:330px; overflow:auto; border-top:1px solid var(--line); }
+.tag-manager-list>div { min-height:49px; display:flex; align-items:center; gap:8px; border-bottom:1px solid var(--line); }
+.tag-filter-link { min-width:0; flex:1; padding:12px 4px; display:flex; align-items:center; justify-content:space-between; gap:12px; color:#d8d4cb; background:none; border:0; text-align:left; font-size:11px; }
+.tag-filter-link span { flex:none; color:#77776f; font-size:9px; }
+.tag-delete { width:30px; height:30px; flex:none; color:#8d6f68; background:#2b211f; border:1px solid #49312c; border-radius:4px; }
+.tag-delete:hover { color:var(--coral); }
+.tag-manager-empty { padding:28px 4px; color:#77776f; font-size:10px; }
 
 @media (max-width:650px) {
   .settings-button { order:3; }
@@ -304,6 +321,8 @@ button, input, select, textarea { font:inherit; } button { cursor:pointer; }
   .filter-row { height:auto; min-height:58px; padding:0 13px; align-items:stretch; gap:12px; overflow:visible; }
   .filters { min-width:0; flex:1; gap:16px; overflow-x:auto; scrollbar-width:none; }
   .filters button { min-width:max-content; min-height:48px; }
+  .filter-tools { padding:9px 0; }
+  .tag-select { width:82px; max-width:82px; padding:6px; color:#aaa89f; }
   .sort-select { width:38px; max-width:38px; margin:10px 0; padding:6px 4px; color:transparent; background-color:#242520; background-image:linear-gradient(45deg,transparent 50%,#89887f 50%),linear-gradient(135deg,#89887f 50%,transparent 50%); background-position:calc(50% - 4px) 50%,calc(50% + 1px) 50%; background-size:5px 5px,5px 5px; background-repeat:no-repeat; }
   .table-head { display:none; }
   .demo-row { grid-template-columns:minmax(0,1fr) auto; grid-template-rows:auto auto; gap:5px 10px; min-height:78px; padding:12px 13px; }
@@ -335,6 +354,9 @@ button, input, select, textarea { font:inherit; } button { cursor:pointer; }
   .modal input,.modal select,.modal textarea { min-height:44px; font-size:16px; }
   .modal-fields { grid-template-columns:1fr; gap:0; }
   .modal-submit { min-height:46px; }
+  .tag-create { grid-template-columns:1fr; }
+  .tag-create button { min-height:44px; }
+  .tag-picker button { min-height:36px; }
   .bulk-choices,.health-grid { grid-template-columns:1fr; }
   .bulk-choice { min-height:108px; }
   .health-grid>div { min-height:132px; }

@@ -21,6 +21,11 @@ database.exec(`
     position INTEGER NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS tags (
+    name TEXT PRIMARY KEY COLLATE NOCASE,
+    created_at INTEGER NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS demos (
     id INTEGER PRIMARY KEY,
     title TEXT NOT NULL,
@@ -80,12 +85,14 @@ database.exec(`
 `);
 
 const listProjects = database.prepare("SELECT name, color, mood FROM projects ORDER BY position");
+const listTags = database.prepare("SELECT name, created_at FROM tags ORDER BY name COLLATE NOCASE");
 const listDemos = database.prepare("SELECT * FROM demos ORDER BY updated_at DESC");
 const listTracklist = database.prepare("SELECT project, demo_id, position FROM tracklist ORDER BY project, position");
 const listMedia = database.prepare("SELECT * FROM project_media ORDER BY created_at DESC");
 
 export function readWorkspace() {
   const projects = listProjects.all();
+  const tags = listTags.all().map((row) => ({ name: row.name, createdAt: Number(row.created_at) }));
   const demos = listDemos.all().map((row) => ({
     id: Number(row.id), title: row.title, bpm: Number(row.bpm), key: row.musical_key,
     duration: row.duration, status: row.status, tags: JSON.parse(row.tags_json || "[]"),
@@ -105,10 +112,11 @@ export function readWorkspace() {
     title: row.title, note: row.note, fileName: row.file_name ?? undefined,
     url: row.url ?? undefined, createdAt: Number(row.created_at),
   }));
-  return { projects, demos, orders, media, empty: projects.length === 0 && demos.length === 0 && media.length === 0 };
+  return { projects, tags, demos, orders, media, empty: projects.length === 0 && tags.length === 0 && demos.length === 0 && media.length === 0 };
 }
 
 const insertProject = database.prepare("INSERT INTO projects (name, color, mood, position) VALUES (?, ?, ?, ?)");
+const insertTag = database.prepare("INSERT INTO tags (name, created_at) VALUES (?, ?)");
 const insertDemo = database.prepare(`
   INSERT INTO demos (id, title, bpm, musical_key, duration, status, tags_json, note, next_action, rating, project, updated_at, audio_name, checksum, file_size, copy_verified_at, creation_date)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -121,11 +129,24 @@ export function writeWorkspace(payload) {
   const demos = Array.isArray(payload.demos) ? payload.demos : [];
   const media = Array.isArray(payload.media) ? payload.media : [];
   const orders = payload.orders && typeof payload.orders === "object" ? payload.orders : {};
+  const suppliedTags = Array.isArray(payload.tags) ? payload.tags : [];
+  const tagMap = new Map();
+  for (const tag of suppliedTags) {
+    const name = String(tag?.name ?? "").trim();
+    if (name) tagMap.set(name.toLocaleLowerCase(), { name, createdAt: Number(tag.createdAt) || Date.now() });
+  }
+  for (const demo of demos) {
+    for (const value of Array.isArray(demo.tags) ? demo.tags : []) {
+      const name = String(value).trim();
+      if (name && !tagMap.has(name.toLocaleLowerCase())) tagMap.set(name.toLocaleLowerCase(), { name, createdAt: Date.now() });
+    }
+  }
   const demoIds = new Set(demos.map((demo) => Number(demo.id)));
   database.exec("BEGIN IMMEDIATE");
   try {
-    database.exec("DELETE FROM tracklist; DELETE FROM project_media; DELETE FROM demos; DELETE FROM projects;");
+    database.exec("DELETE FROM tracklist; DELETE FROM project_media; DELETE FROM demos; DELETE FROM projects; DELETE FROM tags;");
     projects.forEach((project, position) => insertProject.run(project.name, project.color, project.mood ?? "", position));
+    for (const tag of tagMap.values()) insertTag.run(tag.name, tag.createdAt);
     demos.forEach((demo) => insertDemo.run(
       demo.id, demo.title, demo.bpm || 0, demo.key || "—", demo.duration || "00:00", demo.status,
       JSON.stringify(Array.isArray(demo.tags) ? demo.tags : []), demo.note ?? "", demo.nextAction ?? "",

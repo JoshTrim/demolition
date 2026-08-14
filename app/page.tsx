@@ -24,6 +24,7 @@ type Demo = {
   creationDate?: string;
 };
 type Project = { name: string; color: "coral" | "yellow" | "blue" | "violet"; mood?: string };
+type TagDefinition = { name: string; createdAt: number };
 type ProjectMedia = {
   id: number;
   project: string;
@@ -54,12 +55,12 @@ function apiUrl(path: string) {
 async function loadWorkspace() {
   const response = await fetch(apiUrl("/api/state"));
   if (!response.ok) throw new Error("The local database is unavailable");
-  return response.json() as Promise<{ demos: Demo[]; projects: Project[]; orders: Record<string, number[]>; media: ProjectMedia[]; empty: boolean }>;
+  return response.json() as Promise<{ demos: Demo[]; projects: Project[]; tags: TagDefinition[]; orders: Record<string, number[]>; media: ProjectMedia[]; empty: boolean }>;
 }
 
 let saveQueue: Promise<void> = Promise.resolve();
 
-function saveWorkspace(payload: { demos: Demo[]; projects: Project[]; orders: Record<string, number[]>; media: ProjectMedia[] }) {
+function saveWorkspace(payload: { demos: Demo[]; projects: Project[]; tags: TagDefinition[]; orders: Record<string, number[]>; media: ProjectMedia[] }) {
   const body = JSON.stringify(payload);
   saveQueue = saveQueue.catch(() => undefined).then(async () => {
     const response = await fetch(apiUrl("/api/state"), {
@@ -251,15 +252,43 @@ function formatCreationDate(iso?: string) {
   return new Intl.DateTimeFormat("en-AU", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }).format(new Date(`${iso}T00:00:00Z`));
 }
 
+function parseTags(value: string) {
+  const tags: string[] = [];
+  const seen = new Set<string>();
+  for (const part of value.split(",")) {
+    const name = part.trim().replace(/^#+/, "").slice(0, 40);
+    const key = name.toLocaleLowerCase();
+    if (!name || seen.has(key)) continue;
+    seen.add(key);
+    tags.push(name);
+  }
+  return tags;
+}
+
+function mergeTags(current: TagDefinition[], names: string[]) {
+  const next = [...current];
+  const known = new Set(current.map((tag) => tag.name.toLocaleLowerCase()));
+  for (const name of names) {
+    const key = name.toLocaleLowerCase();
+    if (!known.has(key)) {
+      known.add(key);
+      next.push({ name, createdAt: Date.now() });
+    }
+  }
+  return next.sort((a, b) => a.name.localeCompare(b.name));
+}
+
 export default function Home() {
   const [demos, setDemos] = useState(initialDemos);
   const [projects, setProjects] = useState(initialProjects);
+  const [tags, setTags] = useState<TagDefinition[]>([]);
   const [media, setMedia] = useState<ProjectMedia[]>([]);
   const [mediaUrls, setMediaUrls] = useState<Record<number, string>>({});
   const [orders, setOrders] = useState<Record<string, number[]>>({});
   const [view, setView] = useState<View>("library");
   const [project, setProject] = useState("All demos");
   const [filter, setFilter] = useState("All");
+  const [tagFilter, setTagFilter] = useState("All tags");
   const [selectedId, setSelectedId] = useState(1);
   const [showAdd, setShowAdd] = useState(false);
   const [showBulk, setShowBulk] = useState(false);
@@ -275,7 +304,9 @@ export default function Home() {
   const [importNotice, setImportNotice] = useState("");
   const [detectingId, setDetectingId] = useState<number>();
   const [showEdit, setShowEdit] = useState(false);
+  const [editTagsDraft, setEditTagsDraft] = useState("");
   const [showProject, setShowProject] = useState(false);
+  const [showTags, setShowTags] = useState(false);
   const [showProjectSettings, setShowProjectSettings] = useState(false);
   const [showMedia, setShowMedia] = useState(false);
   const [projectTab, setProjectTab] = useState<"tracklist" | "moodboard">("tracklist");
@@ -307,9 +338,11 @@ export default function Home() {
           const legacyData = {
             demos: Array.isArray(legacy.demos) ? legacy.demos.map((demo) => ({ ...demo, creationDate: demo.creationDate || extractCreationDate(demo.title) })) : [],
             projects: Array.isArray(legacy.projects) ? legacy.projects : [],
+            tags: Array.isArray(legacy.tags) ? legacy.tags : [],
             media: Array.isArray(legacy.media) ? legacy.media : [],
             orders: legacy.orders && typeof legacy.orders === "object" ? legacy.orders : {},
           };
+          legacyData.tags = mergeTags(legacyData.tags, legacyData.demos.flatMap((demo) => demo.tags));
           if (serverData.empty && (legacyData.demos.length || legacyData.projects.length || legacyData.media.length)) {
             await saveWorkspace(legacyData);
             data = { ...legacyData, empty: false };
@@ -339,6 +372,7 @@ export default function Home() {
         if (!active) return;
         setDemos(data.demos);
         setProjects(data.projects);
+        setTags(mergeTags(data.tags ?? [], data.demos.flatMap((demo) => demo.tags)));
         setMedia(data.media);
         setOrders(data.orders);
         setSelectedId(data.demos[0]?.id ?? 1);
@@ -355,12 +389,12 @@ export default function Home() {
   useEffect(() => {
     if (!ready) return;
     const timeout = window.setTimeout(() => {
-      saveWorkspace({ demos, projects, orders, media }).catch(() => {
+      saveWorkspace({ demos, projects, tags, orders, media }).catch(() => {
         setImportNotice("Changes could not be saved to SQLite. Check that the local server is running.");
       });
     }, 250);
     return () => window.clearTimeout(timeout);
-  }, [demos, projects, orders, media, ready]);
+  }, [demos, projects, tags, orders, media, ready]);
 
   useEffect(() => {
     let currentUrl: string | undefined;
@@ -410,8 +444,9 @@ export default function Home() {
       const projectMatch = project === "All demos" || demo.project === project;
       const filterMatch = filter === "All" || statusLabels[demo.status] === filter;
       const searchMatch = `${demo.title} ${demo.tags.join(" ")}`.toLowerCase().includes(search.toLowerCase());
+      const tagMatch = tagFilter === "All tags" || demo.tags.some((tag) => tag.toLocaleLowerCase() === tagFilter.toLocaleLowerCase());
       const revisitMatch = view !== "revisit" || demo.status === "revisit" || demo.status === "unheard";
-      return projectMatch && filterMatch && searchMatch && revisitMatch;
+      return projectMatch && filterMatch && tagMatch && searchMatch && revisitMatch;
     });
     if (view === "revisit") return result.sort((a, b) => a.updatedAt - b.updatedAt);
     if (view === "project" && project !== "All demos") {
@@ -435,13 +470,29 @@ export default function Home() {
       });
     }
     return result;
-  }, [demos, project, filter, search, view, orders, sortBy]);
+  }, [demos, project, filter, tagFilter, search, view, orders, sortBy]);
 
   function selectProject(name: string) {
     setProject(name);
     setView(name === "All demos" ? "library" : "project");
     setFilter("All");
     setProjectTab("tracklist");
+  }
+
+  function openEdit() {
+    if (!selected) return;
+    setEditTagsDraft(selected.tags.join(", "));
+    setShowEdit(true);
+  }
+
+  function toggleEditTag(name: string) {
+    setEditTagsDraft((current) => {
+      const currentTags = parseTags(current);
+      const next = currentTags.some((tag) => tag.toLocaleLowerCase() === name.toLocaleLowerCase())
+        ? currentTags.filter((tag) => tag.toLocaleLowerCase() !== name.toLocaleLowerCase())
+        : [...currentTags, name];
+      return next.join(", ");
+    });
   }
 
   async function addDemo(event: React.FormEvent<HTMLFormElement>) {
@@ -455,6 +506,7 @@ export default function Home() {
     if (hasFile && storageInfo.quota && file.size > storageInfo.quota - storageInfo.usage) { window.alert("There is not enough disk space available for this copy."); return; }
     const analysis = hasFile ? await analyzeAudio(file) : { duration: "00:00", bpm: 0 };
     const title = String(form.get("title") || (hasFile ? file.name.replace(/\.[^.]+$/, "") : "Untitled demo"));
+    const demoTags = parseTags(String(form.get("tags") || ""));
     const next: Demo = {
       id,
       title,
@@ -462,7 +514,7 @@ export default function Home() {
       key: String(form.get("key") || "C maj"),
       duration: analysis.duration,
       status: "unheard",
-      tags: ["new"],
+      tags: demoTags,
       note: "",
       nextAction: "First proper listen",
       rating: 0,
@@ -475,6 +527,7 @@ export default function Home() {
       creationDate: extractCreationDate(hasFile ? file.name : title),
     };
     if (hasFile) await putAudio(id, file);
+    setTags((current) => mergeTags(current, demoTags));
     setDemos((current) => [next, ...current]);
     setSelectedId(id);
     setProject("All demos");
@@ -488,12 +541,14 @@ export default function Home() {
     const form = new FormData(event.currentTarget);
     const previousProject = selected.project;
     const nextProject = String(form.get("project"));
+    const nextTags = parseTags(editTagsDraft);
+    setTags((current) => mergeTags(current, nextTags));
     setDemos((current) => current.map((demo) => demo.id === selected.id ? {
       ...demo,
       title: String(form.get("title")), bpm: Number(form.get("bpm")), key: String(form.get("key")),
       creationDate: String(form.get("creationDate") || "") || undefined,
       status: String(form.get("status")) as Status, project: nextProject,
-      tags: String(form.get("tags")).split(",").map((tag) => tag.trim()).filter(Boolean),
+      tags: nextTags,
       note: String(form.get("note")), nextAction: String(form.get("nextAction")),
       rating: Number(form.get("rating")), updatedAt: Date.now(),
     } : demo));
@@ -521,6 +576,7 @@ export default function Home() {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     const destination = String(form.get("project") || "Unsorted");
+    const batchTags = parseTags(String(form.get("tags") || ""));
     const candidates = [...form.getAll("files"), ...form.getAll("folder")].filter((item): item is File => item instanceof File && item.size > 0);
     const audioFiles = candidates.filter((file) => file.type.startsWith("audio/") || /\.(wav|aif|aiff|mp3|m4a|flac|ogg|opus|aac)$/i.test(file.name));
     const skippedFiles = candidates.length - audioFiles.length;
@@ -543,13 +599,14 @@ export default function Home() {
       const title = file.name.replace(/\.[^.]+$/, "");
       imported.push({
         id, title, bpm: analysis.bpm, key: "—", duration: analysis.duration,
-        status: "unheard", tags: ["bulk import"], note: "", nextAction: "First proper listen",
+        status: "unheard", tags: batchTags, note: "", nextAction: "First proper listen",
         rating: 0, project: destination, updatedAt: Date.now(), audioName: file.name,
         checksum, fileSize: file.size, copyVerifiedAt: Date.now(),
         creationDate: extractCreationDate(title),
       });
     }
     if (!imported.length) { setBulkProgress(`Nothing new to import. ${duplicates} duplicate ${duplicates === 1 ? "file was" : "files were"} skipped.`); return; }
+    setTags((current) => mergeTags(current, batchTags));
     setDemos((current) => [...imported, ...current]);
     setSelectedId(imported[0].id);
     setProject(destination === "Unsorted" ? "All demos" : destination);
@@ -779,8 +836,25 @@ export default function Home() {
     setView("revisit");
   }
 
+  function addCustomTag(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const names = parseTags(String(form.get("name") || ""));
+    if (!names.length) return;
+    setTags((current) => mergeTags(current, names));
+    event.currentTarget.reset();
+  }
+
+  function removeCustomTag(name: string) {
+    const count = demos.filter((demo) => demo.tags.some((tag) => tag.toLocaleLowerCase() === name.toLocaleLowerCase())).length;
+    if (!window.confirm(`Delete “${name}”? It will be removed from ${count} ${count === 1 ? "demo" : "demos"}.`)) return;
+    setTags((current) => current.filter((tag) => tag.name.toLocaleLowerCase() !== name.toLocaleLowerCase()));
+    setDemos((current) => current.map((demo) => ({ ...demo, tags: demo.tags.filter((tag) => tag.toLocaleLowerCase() !== name.toLocaleLowerCase()) })));
+    if (tagFilter.toLocaleLowerCase() === name.toLocaleLowerCase()) setTagFilter("All tags");
+  }
+
   function exportBackup() {
-    const payload = JSON.stringify({ version: 3, exportedAt: new Date().toISOString(), demos, projects, orders, media }, null, 2);
+    const payload = JSON.stringify({ version: 4, exportedAt: new Date().toISOString(), demos, projects, tags, orders, media }, null, 2);
     const url = URL.createObjectURL(new Blob([payload], { type: "application/json" }));
     const anchor = document.createElement("a");
     anchor.href = url;
@@ -795,7 +869,8 @@ export default function Home() {
     try {
       const data = JSON.parse(await file.text());
       if (!Array.isArray(data.demos) || !Array.isArray(data.projects)) throw new Error("Invalid backup");
-      setDemos(data.demos); setProjects(data.projects); setOrders(data.orders ?? {}); setMedia(data.media ?? []);
+      const restoredTags = mergeTags(Array.isArray(data.tags) ? data.tags : [], data.demos.flatMap((demo: Demo) => demo.tags));
+      setDemos(data.demos); setProjects(data.projects); setTags(restoredTags); setOrders(data.orders ?? {}); setMedia(data.media ?? []);
       setSelectedId(data.demos[0]?.id ?? 1); setProject("All demos"); setView("library");
     } catch { window.alert("That file is not a valid Demolition backup."); }
     event.target.value = "";
@@ -811,6 +886,7 @@ export default function Home() {
         <nav className="main-nav" aria-label="Main navigation">
           <button onClick={() => selectProject("All demos")} className={`nav-item ${view === "library" ? "active" : ""}`}><span>▦</span> Demo library <b>{demos.length}</b></button>
           <button onClick={() => { setView("revisit"); setProject("All demos"); setFilter("All"); }} className={`nav-item ${view === "revisit" ? "active" : ""}`}><span>◌</span> Revisit queue <b className="inbox-count">{revisitDemos.length}</b></button>
+          <button onClick={() => setShowTags(true)} className="nav-item"><span>#</span> Manage tags <b>{tags.length}</b></button>
           <button onClick={exportBackup} className="nav-item"><span>⇩</span> Export backup</button>
           <button onClick={() => importRef.current?.click()} className="nav-item"><span>⇧</span> Restore backup</button>
           <button onClick={() => { setDetectProgress(""); setShowBulkDetect(true); }} className="nav-item"><span>⌁</span> Detect BPM <b>{demos.filter((demo) => !demo.bpm).length}</b></button>
@@ -853,11 +929,11 @@ export default function Home() {
           </section> : <>
           <div className="section-heading"><div><h2>{currentTitle}</h2><span className="muted">{view === "project" ? "Drag rows to reorder the tracklist." : view === "revisit" ? "Demos marked Unheard or Revisit, sorted oldest first." : "Filter, search, and sort your demos."}</span></div><span className="saved-note">{ready ? "✓ Changes saved locally" : "Loading your library…"}</span></div>
           <div className={`workspace-grid ${view === "project" && project !== "Unsorted" ? "project-workspace" : ""}`}>
-            <div className="demo-panel" onDragOver={(event) => { if (view === "project") event.preventDefault(); }} onDrop={() => { if (view === "project") dropOnTracklist(); }}><div className="filter-row"><div className="filters">{["All", "Unheard", "Revisit", "Shaping", "Finished"].map((item) => <button key={item} onClick={() => setFilter(item)} className={filter === item ? "filter-active" : ""}>{item}</button>)}</div>{view === "project" ? <span className="sort-button">↕ Drag to reorder</span> : <select className="sort-select" value={sortBy} onChange={(event) => setSortBy(event.target.value as typeof sortBy)} aria-label="Sort demos"><option value="updated">Recently updated</option><option value="created-new">Creation date · newest</option><option value="created-old">Creation date · oldest</option><option value="title">Title · A–Z</option></select>}</div><div className="demo-table"><div className="table-head"><span>{view === "project" ? "TRACK / DEMO" : "DEMO"}</span><span>DETAILS</span><span>STATUS</span><span>UPDATED</span><span /></div>{visibleDemos.map((demo, index) => <button key={demo.id} draggable={view === "project"} onDragStart={() => setDraggedId(demo.id)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.stopPropagation(); dropOnTracklist(demo.id); }} onClick={() => setSelectedId(demo.id)} className={`demo-row ${selectedId === demo.id ? "row-selected" : ""}`}><span className="demo-name">{view === "project" && <b className="track-number">{String(index + 1).padStart(2, "0")}</b>}<span className={`cover cover-${demo.id % 4}`}><i /></span><span><strong>{demo.title}</strong><small>{demo.creationDate && <b className="date-tag">{formatCreationDate(demo.creationDate)}</b>}{demo.tags.join("  ·  ")}{demo.audioName ? "  ·  audio linked" : ""}</small></span></span><span className="details">{demo.bpm ? `${demo.bpm} BPM` : "BPM —"} <i>·</i> {demo.key} <i>·</i> {demo.duration}</span><span><b className={`status ${demo.status}`}>{statusLabels[demo.status]}</b></span><span className="updated">{relativeDate(demo.updatedAt)}</span><span className="row-arrow">→</span></button>)}</div>{visibleDemos.length === 0 && (view === "project" ? <div className="empty-state tracklist-empty">Drag candidates here to begin the tracklist.</div> : demos.length === 0 ? <div className="empty-state library-empty"><span>✳</span><strong>Your library is empty</strong><p>Choose a folder of demo bounces to start building your archive.</p><button onClick={() => { setBulkProgress(""); setShowBulk(true); }}>＋ Import your demos</button></div> : <div className="empty-state">No demos match this view.</div>)}</div>
+            <div className="demo-panel" onDragOver={(event) => { if (view === "project") event.preventDefault(); }} onDrop={() => { if (view === "project") dropOnTracklist(); }}><div className="filter-row"><div className="filters">{["All", "Unheard", "Revisit", "Shaping", "Finished"].map((item) => <button key={item} onClick={() => setFilter(item)} className={filter === item ? "filter-active" : ""}>{item}</button>)}</div><div className="filter-tools"><select className="tag-select" value={tagFilter} onChange={(event) => setTagFilter(event.target.value)} aria-label="Filter by tag"><option>All tags</option>{tags.map((tag) => <option key={tag.name}>{tag.name}</option>)}</select>{view === "project" ? <span className="sort-button">↕ Drag to reorder</span> : <select className="sort-select" value={sortBy} onChange={(event) => setSortBy(event.target.value as typeof sortBy)} aria-label="Sort demos"><option value="updated">Recently updated</option><option value="created-new">Creation date · newest</option><option value="created-old">Creation date · oldest</option><option value="title">Title · A–Z</option></select>}</div></div><div className="demo-table"><div className="table-head"><span>{view === "project" ? "TRACK / DEMO" : "DEMO"}</span><span>DETAILS</span><span>STATUS</span><span>UPDATED</span><span /></div>{visibleDemos.map((demo, index) => <button key={demo.id} draggable={view === "project"} onDragStart={() => setDraggedId(demo.id)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.stopPropagation(); dropOnTracklist(demo.id); }} onClick={() => setSelectedId(demo.id)} className={`demo-row ${selectedId === demo.id ? "row-selected" : ""}`}><span className="demo-name">{view === "project" && <b className="track-number">{String(index + 1).padStart(2, "0")}</b>}<span className={`cover cover-${demo.id % 4}`}><i /></span><span><strong>{demo.title}</strong><small>{demo.creationDate && <b className="date-tag">{formatCreationDate(demo.creationDate)}</b>}{demo.tags.join("  ·  ")}{demo.audioName ? "  ·  audio linked" : ""}</small></span></span><span className="details">{demo.bpm ? `${demo.bpm} BPM` : "BPM —"} <i>·</i> {demo.key} <i>·</i> {demo.duration}</span><span><b className={`status ${demo.status}`}>{statusLabels[demo.status]}</b></span><span className="updated">{relativeDate(demo.updatedAt)}</span><span className="row-arrow">→</span></button>)}</div>{visibleDemos.length === 0 && (view === "project" ? <div className="empty-state tracklist-empty">Drag candidates here to begin the tracklist.</div> : demos.length === 0 ? <div className="empty-state library-empty"><span>✳</span><strong>Your library is empty</strong><p>Choose a folder of demo bounces to start building your archive.</p><button onClick={() => { setBulkProgress(""); setShowBulk(true); }}>＋ Import your demos</button></div> : <div className="empty-state">No demos match this view.</div>)}</div>
 
             {view === "project" && project !== "Unsorted" && <aside className="candidate-panel" onDragOver={(event) => event.preventDefault()} onDrop={dropInCandidatePool}><div className="candidate-head"><div><span className="eyebrow">CANDIDATE POOL</span><h3>{projectCandidates.length} candidate {projectCandidates.length === 1 ? "track" : "tracks"}</h3></div><span>Drag into tracklist →</span></div><div className="candidate-list">{projectCandidates.map((demo) => <div key={demo.id} className="candidate-row" draggable onDragStart={() => setDraggedId(demo.id)}><button onClick={() => setSelectedId(demo.id)}><span className={`cover cover-${demo.id % 4}`}><i /></span><span><strong>{demo.title}</strong><small>{demo.bpm ? `${demo.bpm} BPM` : "BPM unknown"} · {statusLabels[demo.status]}</small></span></button><button className="promote-button" onClick={() => setOrders((current) => ({ ...current, [project]: [...(current[project] ?? []).filter((id) => id !== demo.id), demo.id] }))} aria-label={`Add ${demo.title} to tracklist`}>＋</button></div>)}{projectCandidates.length === 0 && <div className="candidate-empty"><span>✓</span><strong>No candidates</strong><small>Import demos here or drag a track out of the tracklist.</small></div>}</div><div className="candidate-drop">← Drop here to return a track to the pool</div></aside>}
 
-            {selected && (view !== "project" || project === "Unsorted") && <aside className="detail-panel"><div className="detail-top"><span className="eyebrow">SELECTED DEMO</span><button className="more-button" onClick={() => setShowEdit(true)}>Edit</button></div><div className={`focus-cover cover-${selected.id % 4}`}><span>✳</span></div><h3>{selected.title}</h3><div className="focus-meta">{selected.bpm ? `${selected.bpm} BPM` : "BPM —"} <i>·</i> {selected.key} <i>·</i> {selected.duration}</div><button className="detect-bpm" disabled={detectingId === selected.id} onClick={detectSelectedBpm}>{detectingId === selected.id ? "◌ Analyzing tempo…" : "⌁ Detect BPM again"}</button><div className="rating" aria-label={`${selected.rating} out of 5 stars`}>{[1,2,3,4,5].map((star) => <span key={star} className={star <= selected.rating ? "rated" : ""}>★</span>)}</div>{audioUrl ? <><audio className="audio-player" src={audioUrl} controls preload="metadata"><track kind="captions" src="data:text/vtt,WEBVTT" srcLang="en" label="Instrumental audio" /></audio><button className="remove-copy" onClick={removeSelectedAudioCopy}>Remove local copy</button></> : <button className="audio-empty" onClick={() => attachRef.current?.click()}><span>＋</span> Attach an audio bounce</button>}<input ref={attachRef} className="sr-only" type="file" accept="audio/*,.wav,.aif,.aiff,.mp3,.m4a,.flac" onChange={attachAudio} /><div className="detail-section"><div className="detail-section-head"><span>NEXT ACTION</span><button onClick={() => setShowEdit(true)}>edit</button></div><p className="next-action">→ {selected.nextAction || "No next action set"}</p></div><div className="detail-section"><div className="detail-section-head"><span>NOTES</span><button onClick={() => setShowEdit(true)}>edit</button></div><p>{selected.note || "No notes yet."}</p></div><div className="detail-section"><div className="detail-section-head"><span>PROJECT</span><button onClick={() => setShowEdit(true)}>change</button></div><div className="assigned-project"><span className="project-dot coral" />{selected.project}<span>↗</span></div></div><button className="open-demo" onClick={() => setShowEdit(true)}>Edit demo <span>↗</span></button></aside>}
+            {selected && (view !== "project" || project === "Unsorted") && <aside className="detail-panel"><div className="detail-top"><span className="eyebrow">SELECTED DEMO</span><button className="more-button" onClick={openEdit}>Edit</button></div><div className={`focus-cover cover-${selected.id % 4}`}><span>✳</span></div><h3>{selected.title}</h3><div className="focus-meta">{selected.bpm ? `${selected.bpm} BPM` : "BPM —"} <i>·</i> {selected.key} <i>·</i> {selected.duration}</div><button className="detect-bpm" disabled={detectingId === selected.id} onClick={detectSelectedBpm}>{detectingId === selected.id ? "◌ Analyzing tempo…" : "⌁ Detect BPM again"}</button><div className="rating" aria-label={`${selected.rating} out of 5 stars`}>{[1,2,3,4,5].map((star) => <span key={star} className={star <= selected.rating ? "rated" : ""}>★</span>)}</div>{audioUrl ? <><audio className="audio-player" src={audioUrl} controls preload="metadata"><track kind="captions" src="data:text/vtt,WEBVTT" srcLang="en" label="Instrumental audio" /></audio><button className="remove-copy" onClick={removeSelectedAudioCopy}>Remove local copy</button></> : <button className="audio-empty" onClick={() => attachRef.current?.click()}><span>＋</span> Attach an audio bounce</button>}<input ref={attachRef} className="sr-only" type="file" accept="audio/*,.wav,.aif,.aiff,.mp3,.m4a,.flac" onChange={attachAudio} /><div className="detail-section"><div className="detail-section-head"><span>NEXT ACTION</span><button onClick={openEdit}>edit</button></div><p className="next-action">→ {selected.nextAction || "No next action set"}</p></div><div className="detail-section"><div className="detail-section-head"><span>NOTES</span><button onClick={openEdit}>edit</button></div><p>{selected.note || "No notes yet."}</p></div><div className="detail-section"><div className="detail-section-head"><span>PROJECT</span><button onClick={openEdit}>change</button></div><div className="assigned-project"><span className="project-dot coral" />{selected.project}<span>↗</span></div></div><button className="open-demo" onClick={openEdit}>Edit demo <span>↗</span></button></aside>}
           </div></>}
           <div className="bottom-note"><span className="spark">✳</span><span><strong>{revisitDemos.length} demos in the review queue.</strong> Sorted by oldest update.</span><button onClick={() => { setView("revisit"); setProject("All demos"); }}>Open revisit queue →</button></div>
         </div>
@@ -869,11 +945,15 @@ export default function Home() {
 
       {showBulkDetect && <div className="modal-backdrop"><form className="modal bpm-bulk-modal" onSubmit={bulkDetectBpm}><button type="button" className="modal-close" disabled={detectProgress.startsWith("Analyzing")} onClick={() => setShowBulkDetect(false)}>×</button><div className="eyebrow">BULK BPM DETECTION</div><h2>Detect BPM</h2><p>Demolition reads each attached audio file locally and estimates its tempo. Manual BPM values are preserved by default.</p><fieldset className="choice-group"><legend>Which demos?</legend><label aria-label="Analyze demos with missing BPM only"><input type="radio" name="mode" value="missing" defaultChecked /><span><strong>Missing BPM only</strong><small>{demos.filter((demo) => !demo.bpm).length} demos currently need analysis</small></span></label><label aria-label="Re-analyze all demo BPM values"><input type="radio" name="mode" value="all" /><span><strong>Re-analyze all</strong><small>Overwrites existing BPM values in the chosen scope</small></span></label></fieldset><fieldset className="choice-group"><legend>Scope</legend><label aria-label="Analyze the entire library"><input type="radio" name="scope" value="library" defaultChecked /><span><strong>Entire library</strong><small>{demos.length} demos</small></span></label>{view === "project" && project !== "Unsorted" && <label aria-label={`Analyze ${project} only`}><input type="radio" name="scope" value="project" /><span><strong>{project}</strong><small>{demos.filter((demo) => demo.project === project).length} demos in this project</small></span></label>}</fieldset>{detectProgress && <div className={`bulk-progress ${detectProgress.startsWith("No ") ? "bulk-error" : ""}`}><span /><p>{detectProgress}</p></div>}<button className="primary-button modal-submit" disabled={detectProgress.startsWith("Analyzing")} type="submit">{detectProgress.startsWith("Analyzing") ? "Analyzing catalogue…" : "Start BPM detection"} <span>→</span></button><small className="bulk-privacy">Tracks without attached audio are skipped. BPM remains manually editable.</small></form></div>}
 
-      {showBulk && <div className="modal-backdrop"><form className="modal bulk-modal" onSubmit={bulkImport}><button type="button" className="modal-close" disabled={/^(Checking|Analyzing)/.test(bulkProgress)} onClick={() => setShowBulk(false)}>×</button><div className="eyebrow">BULK IMPORT</div><h2>Import audio files</h2><p>Select a folder or choose several audio files. Demolition imports playable audio and detects each demo&apos;s BPM locally.</p><div className="source-safety"><span>✓</span><div><strong>Your source files are read-only</strong><small>Demolition creates app-managed local copies. It cannot rename, overwrite, or delete anything in the selected folder.</small></div></div><div className="bulk-choices"><label className="file-drop bulk-choice"><span className="bulk-icon">▤</span><strong>Choose a folder</strong><small>Audio from all subfolders · other files ignored</small><input name="folder" type="file" accept="audio/*,.wav,.aif,.aiff,.mp3,.m4a,.flac,.ogg,.opus,.aac" multiple webkitdirectory="" /></label><label className="file-drop bulk-choice"><span className="bulk-icon">♪</span><strong>Choose audio files</strong><small>Select multiple files</small><input name="files" type="file" accept="audio/*,.wav,.aif,.aiff,.mp3,.m4a,.flac,.ogg,.opus,.aac" multiple /></label></div><label>Destination<select name="project" defaultValue={project !== "All demos" && project !== "Unsorted" ? project : projects[0]?.name ?? "Unsorted"}>{projectNames.map((name) => <option key={name}>{name}</option>)}</select></label>{bulkProgress && <div className={`bulk-progress ${bulkProgress.startsWith("No ") || bulkProgress.startsWith("Not ") || bulkProgress.startsWith("Nothing ") ? "bulk-error" : ""}`}><span /><p>{bulkProgress}</p></div>}<button className="primary-button modal-submit" disabled={/^(Checking|Analyzing)/.test(bulkProgress)} type="submit">{/^(Checking|Analyzing)/.test(bulkProgress) ? "Checking and analyzing…" : "Import safe copies"} <span>→</span></button><small className="bulk-privacy">Only Demolition&apos;s managed copies can be removed from this app.</small></form></div>}
+      {showBulk && <div className="modal-backdrop"><form className="modal bulk-modal" onSubmit={bulkImport}><button type="button" className="modal-close" disabled={/^(Checking|Analyzing)/.test(bulkProgress)} onClick={() => setShowBulk(false)}>×</button><div className="eyebrow">BULK IMPORT</div><h2>Import audio files</h2><p>Select a folder or choose several audio files. Every imported demo can receive the same batch tags.</p><div className="source-safety"><span>✓</span><div><strong>Your source files are read-only</strong><small>Demolition creates app-managed local copies. It cannot rename, overwrite, or delete anything in the selected folder.</small></div></div><div className="bulk-choices"><label className="file-drop bulk-choice"><span className="bulk-icon">▤</span><strong>Choose a folder</strong><small>Audio from all subfolders · other files ignored</small><input name="folder" type="file" accept="audio/*,.wav,.aif,.aiff,.mp3,.m4a,.flac,.ogg,.opus,.aac" multiple webkitdirectory="" /></label><label className="file-drop bulk-choice"><span className="bulk-icon">♪</span><strong>Choose audio files</strong><small>Select multiple files</small><input name="files" type="file" accept="audio/*,.wav,.aif,.aiff,.mp3,.m4a,.flac,.ogg,.opus,.aac" multiple /></label></div><label>Destination<select name="project" defaultValue={project !== "All demos" && project !== "Unsorted" ? project : projects[0]?.name ?? "Unsorted"}>{projectNames.map((name) => <option key={name}>{name}</option>)}</select></label><label>Batch tags<input name="tags" list="known-tags" placeholder="e.g. April exports, laptop sessions" /><span className="field-hint">Comma separated · applied to every file in this import</span></label>{bulkProgress && <div className={`bulk-progress ${bulkProgress.startsWith("No ") || bulkProgress.startsWith("Not ") || bulkProgress.startsWith("Nothing ") ? "bulk-error" : ""}`}><span /><p>{bulkProgress}</p></div>}<button className="primary-button modal-submit" disabled={/^(Checking|Analyzing)/.test(bulkProgress)} type="submit">{/^(Checking|Analyzing)/.test(bulkProgress) ? "Checking and analyzing…" : "Import safe copies"} <span>→</span></button><small className="bulk-privacy">Only Demolition&apos;s managed copies can be removed from this app.</small></form></div>}
 
-      {showAdd && <div className="modal-backdrop"><form className="modal" onSubmit={addDemo}><button type="button" className="modal-close" onClick={() => setShowAdd(false)}>×</button><div className="eyebrow">IMPORT DEMO</div><h2>Import one demo</h2><p>Choose an audio file. Demolition creates a managed local copy, detects its BPM, and leaves the original untouched.</p><label className="file-drop">Audio file<input name="audio" type="file" accept="audio/*,.wav,.aif,.aiff,.mp3,.m4a,.flac" /><span>Read-only source · managed local copy</span></label><label>Demo title<input name="title" placeholder="Uses the filename if left blank" /></label><div className="modal-fields"><label>BPM<input name="bpm" type="number" placeholder="Auto detect" /></label><label>Key<input name="key" defaultValue="C maj" /></label></div><label>Project<select name="project" defaultValue={project !== "All demos" ? project : "Unsorted"}>{projectNames.map((name) => <option key={name}>{name}</option>)}</select></label><button className="primary-button modal-submit" type="submit">Import safe copy <span>→</span></button></form></div>}
+      {showAdd && <div className="modal-backdrop"><form className="modal" onSubmit={addDemo}><button type="button" className="modal-close" onClick={() => setShowAdd(false)}>×</button><div className="eyebrow">IMPORT DEMO</div><h2>Import one demo</h2><p>Choose an audio file. Demolition creates a managed local copy, detects its BPM, and leaves the original untouched.</p><label className="file-drop">Audio file<input name="audio" type="file" accept="audio/*,.wav,.aif,.aiff,.mp3,.m4a,.flac" /><span>Read-only source · managed local copy</span></label><label>Demo title<input name="title" placeholder="Uses the filename if left blank" /></label><div className="modal-fields"><label>BPM<input name="bpm" type="number" placeholder="Auto detect" /></label><label>Key<input name="key" defaultValue="C maj" /></label></div><label>Project<select name="project" defaultValue={project !== "All demos" ? project : "Unsorted"}>{projectNames.map((name) => <option key={name}>{name}</option>)}</select></label><label>Tags<input name="tags" list="known-tags" placeholder="e.g. April exports, laptop sessions" /><span className="field-hint">Comma separated</span></label><button className="primary-button modal-submit" type="submit">Import safe copy <span>→</span></button></form></div>}
 
-      {showEdit && selected && <div className="modal-backdrop"><form className="modal edit-modal" onSubmit={editDemo}><button type="button" className="modal-close" onClick={() => setShowEdit(false)}>×</button><div className="eyebrow">EDIT DEMO</div><h2>{selected.title}</h2><div className="modal-fields"><label>Title<input name="title" defaultValue={selected.title} required /></label><label>Status<select name="status" defaultValue={selected.status}>{Object.entries(statusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label>BPM<input name="bpm" type="number" defaultValue={selected.bpm} /></label><label>Key<input name="key" defaultValue={selected.key} /></label><label>Project<select name="project" defaultValue={selected.project}>{projectNames.map((name) => <option key={name}>{name}</option>)}</select></label><label>Rating<select name="rating" defaultValue={selected.rating}>{[0,1,2,3,4,5].map((rating) => <option key={rating} value={rating}>{rating === 0 ? "Unrated" : `${rating} / 5`}</option>)}</select></label></div><label>Creation date<input name="creationDate" type="date" defaultValue={selected.creationDate} /><span className="field-hint">Extracted from the title when possible; editable anytime.</span></label><label>Tags<input name="tags" defaultValue={selected.tags.join(", ")} placeholder="club, vocal, warm" /></label><label>Next action<input name="nextAction" defaultValue={selected.nextAction} placeholder="One concrete thing to try" /></label><label>Listening notes<textarea name="note" defaultValue={selected.note} rows={4} /></label><button className="primary-button modal-submit" type="submit">Save changes <span>→</span></button></form></div>}
+      {showEdit && selected && <div className="modal-backdrop"><form className="modal edit-modal" onSubmit={editDemo}><button type="button" className="modal-close" onClick={() => setShowEdit(false)}>×</button><div className="eyebrow">EDIT DEMO</div><h2>{selected.title}</h2><div className="modal-fields"><label>Title<input name="title" defaultValue={selected.title} required /></label><label>Status<select name="status" defaultValue={selected.status}>{Object.entries(statusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label>BPM<input name="bpm" type="number" defaultValue={selected.bpm} /></label><label>Key<input name="key" defaultValue={selected.key} /></label><label>Project<select name="project" defaultValue={selected.project}>{projectNames.map((name) => <option key={name}>{name}</option>)}</select></label><label>Rating<select name="rating" defaultValue={selected.rating}>{[0,1,2,3,4,5].map((rating) => <option key={rating} value={rating}>{rating === 0 ? "Unrated" : `${rating} / 5`}</option>)}</select></label></div><label>Creation date<input name="creationDate" type="date" defaultValue={selected.creationDate} /><span className="field-hint">Extracted from the title when possible; editable anytime.</span></label><label>Tags<input value={editTagsDraft} onChange={(event) => setEditTagsDraft(event.target.value)} placeholder="Type tags separated by commas" /></label>{tags.length > 0 && <div className="tag-picker" aria-label="Available tags">{tags.map((tag) => <button key={tag.name} type="button" className={parseTags(editTagsDraft).some((item) => item.toLocaleLowerCase() === tag.name.toLocaleLowerCase()) ? "selected" : ""} onClick={() => toggleEditTag(tag.name)}>#{tag.name}</button>)}</div>}<label>Next action<input name="nextAction" defaultValue={selected.nextAction} placeholder="One concrete thing to try" /></label><label>Listening notes<textarea name="note" defaultValue={selected.note} rows={4} /></label><button className="primary-button modal-submit" type="submit">Save changes <span>→</span></button></form></div>}
+
+      {showTags && <div className="modal-backdrop"><section className="modal tags-modal" aria-label="Manage tags"><button type="button" className="modal-close" onClick={() => setShowTags(false)}>×</button><div className="eyebrow">TAGS</div><h2>Manage tags</h2><p>Create reusable tags for demo batches, sessions, locations, or any other grouping.</p><form className="tag-create" onSubmit={addCustomTag}><input name="name" placeholder="Tag name" aria-label="New tag name" required /><button className="primary-button" type="submit">Add tag</button></form><div className="tag-manager-list">{tags.map((tag) => { const count = demos.filter((demo) => demo.tags.some((item) => item.toLocaleLowerCase() === tag.name.toLocaleLowerCase())).length; return <div key={tag.name}><button className="tag-filter-link" onClick={() => { setTagFilter(tag.name); setShowTags(false); setProject("All demos"); setView("library"); }}>#{tag.name}<span>{count} {count === 1 ? "demo" : "demos"}</span></button><button className="tag-delete" onClick={() => removeCustomTag(tag.name)} aria-label={`Delete ${tag.name}`}>×</button></div>; })}{tags.length === 0 && <div className="tag-manager-empty">No tags created.</div>}</div></section></div>}
+
+      <datalist id="known-tags">{tags.map((tag) => <option key={tag.name} value={tag.name} />)}</datalist>
 
       {showMedia && <div className="modal-backdrop"><form className="modal media-modal" onSubmit={addMedia}><button type="button" className="modal-close" onClick={() => setShowMedia(false)}>×</button><div className="eyebrow">ADD TO {project.toUpperCase()}</div><h2>Add a reference</h2><p>Add a local image, video, or audio file, or save a web link. Files are copied into Demolition’s local data folder.</p><label className="file-drop">Local media<input name="file" type="file" accept="image/*,video/*,audio/*,.wav,.aif,.aiff,.mp3,.m4a,.flac" /><span>Image, video, or audio reference</span></label><div className="modal-divider"><span>or add a link</span></div><div className="modal-fields"><label>Web URL<input name="url" type="url" placeholder="https://…" /></label><label>Link type<select name="kind" defaultValue="link"><option value="link">Website / song link</option><option value="image">Direct image URL</option><option value="video">Direct video URL</option><option value="audio">Direct audio URL</option></select></label></div><label>Title<input name="title" placeholder="Uses the filename if left blank" /></label><label>Notes<textarea name="note" rows={3} placeholder="Add context for this reference" /></label><button className="primary-button modal-submit" type="submit">Add to moodboard <span>→</span></button></form></div>}
 

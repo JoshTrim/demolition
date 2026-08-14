@@ -28,6 +28,7 @@ test("server-renders the Demolition workspace", async () => {
   assert.match(html, /Demo library/);
   assert.match(html, /Local SQLite library/);
   assert.match(html, /Bulk import/);
+  assert.match(html, /Manage tags/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|A little attention goes a long way/i);
 });
 
@@ -42,7 +43,7 @@ test("uses the local SQLite and managed-file backend", async () => {
       orders: { Album: [1] }, media: []
     });
     const state = database.readWorkspace();
-    if (state.projects[0].name !== "Album" || state.demos[0].creationDate !== "2019-04-12" || state.orders.Album[0] !== 1) process.exit(1);
+    if (state.projects[0].name !== "Album" || state.tags[0].name !== "test" || state.demos[0].creationDate !== "2019-04-12" || state.orders.Album[0] !== 1) process.exit(1);
   `;
   await run(process.execPath, ["--input-type=module", "-e", script], { cwd: temporaryDirectory });
 });
