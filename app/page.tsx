@@ -34,6 +34,11 @@ type ListenEvent = {
   listenedAt: number; signature?: string;
 };
 type ListenStats = { up: number; down: number; score: number; count: number; lastAt?: number };
+type TimedNote = {
+  id: number; noteUuid: string; demoId: number; demoUuid: string; authorId: string;
+  authorName: string; authorPublicKey?: string; startSeconds: number; endSeconds: number;
+  note: string; createdAt: number; signature?: string;
+};
 type Account = { id: string; displayName: string; instanceId: string; publicKey: string; peerUrl: string; createdAt: number };
 type Friend = { id: string; displayName: string; instanceId: string; peerUrl: string; publicKey: string; status: string; createdAt: number; lastSyncedAt?: number };
 type DemoShare = { demoUuid: string; friendId: string; shareAudio: boolean };
@@ -67,12 +72,12 @@ function apiUrl(path: string) {
 async function loadWorkspace() {
   const response = await fetch(apiUrl("/api/state"));
   if (!response.ok) throw new Error("The local database is unavailable");
-  return response.json() as Promise<{ account: Account; friends: Friend[]; shares: DemoShare[]; demos: Demo[]; projects: Project[]; tags: TagDefinition[]; orders: Record<string, number[]>; media: ProjectMedia[]; listens: ListenEvent[]; empty: boolean }>;
+  return response.json() as Promise<{ account: Account; friends: Friend[]; shares: DemoShare[]; demos: Demo[]; projects: Project[]; tags: TagDefinition[]; orders: Record<string, number[]>; media: ProjectMedia[]; listens: ListenEvent[]; timedNotes: TimedNote[]; empty: boolean }>;
 }
 
 let saveQueue: Promise<void> = Promise.resolve();
 
-function saveWorkspace(payload: { demos: Demo[]; projects: Project[]; tags: TagDefinition[]; orders: Record<string, number[]>; media: ProjectMedia[]; listens: ListenEvent[]; shares: DemoShare[] }) {
+function saveWorkspace(payload: { demos: Demo[]; projects: Project[]; tags: TagDefinition[]; orders: Record<string, number[]>; media: ProjectMedia[]; listens: ListenEvent[]; timedNotes: TimedNote[]; shares: DemoShare[] }) {
   const body = JSON.stringify(payload);
   saveQueue = saveQueue.catch(() => undefined).then(async () => {
     const response = await fetch(apiUrl("/api/state"), {
@@ -306,6 +311,7 @@ export default function Home() {
   const [tags, setTags] = useState<TagDefinition[]>([]);
   const [media, setMedia] = useState<ProjectMedia[]>([]);
   const [listens, setListens] = useState<ListenEvent[]>([]);
+  const [timedNotes, setTimedNotes] = useState<TimedNote[]>([]);
   const [account, setAccount] = useState<Account>();
   const [friends, setFriends] = useState<Friend[]>([]);
   const [shares, setShares] = useState<DemoShare[]>([]);
@@ -333,6 +339,10 @@ export default function Home() {
   const [rapidNote, setRapidNote] = useState("");
   const [rapidVote, setRapidVote] = useState<"up" | "down">();
   const [rapidVoteEventUuid, setRapidVoteEventUuid] = useState<string>();
+  const [rapidDuration, setRapidDuration] = useState(0);
+  const [rapidCurrentTime, setRapidCurrentTime] = useState(0);
+  const [timedNoteRange, setTimedNoteRange] = useState<{ start: number; end: number }>();
+  const [timedNoteDraft, setTimedNoteDraft] = useState("");
   const [importNotice, setImportNotice] = useState("");
   const [detectingId, setDetectingId] = useState<number>();
   const [showEdit, setShowEdit] = useState(false);
@@ -349,7 +359,10 @@ export default function Home() {
   const [draggedId, setDraggedId] = useState<number>();
   const importRef = useRef<HTMLInputElement>(null);
   const attachRef = useRef<HTMLInputElement>(null);
+  const detailAudioRef = useRef<HTMLAudioElement>(null);
   const rapidAudioRef = useRef<HTMLAudioElement>(null);
+  const annotationRailRef = useRef<HTMLDivElement>(null);
+  const annotationDragStartRef = useRef<number>();
   const rapidActionsRef = useRef({ previous: () => undefined, next: () => undefined, down: () => undefined, up: () => undefined });
 
   async function refreshStorageInfo() {
@@ -374,6 +387,7 @@ export default function Home() {
             tags: Array.isArray(legacy.tags) ? legacy.tags : [],
             media: Array.isArray(legacy.media) ? legacy.media : [],
             listens: Array.isArray(legacy.listens) ? legacy.listens : [],
+            timedNotes: Array.isArray(legacy.timedNotes) ? legacy.timedNotes : [],
             shares: Array.isArray(legacy.shares) ? legacy.shares : [],
             orders: legacy.orders && typeof legacy.orders === "object" ? legacy.orders : {},
           };
@@ -410,6 +424,7 @@ export default function Home() {
         setTags(mergeTags(data.tags ?? [], data.demos.flatMap((demo) => demo.tags)));
         setMedia(data.media);
         setListens(data.listens ?? []);
+        setTimedNotes(data.timedNotes ?? []);
         setAccount(data.account);
         setFriends(data.friends ?? []);
         setShares(data.shares ?? []);
@@ -428,12 +443,12 @@ export default function Home() {
   useEffect(() => {
     if (!ready) return;
     const timeout = window.setTimeout(() => {
-      saveWorkspace({ demos, projects, tags, orders, media, listens, shares }).catch(() => {
+      saveWorkspace({ demos, projects, tags, orders, media, listens, timedNotes, shares }).catch(() => {
         setImportNotice("Changes could not be saved to SQLite. Check that the local server is running.");
       });
     }, 250);
     return () => window.clearTimeout(timeout);
-  }, [demos, projects, tags, orders, media, listens, shares, ready]);
+  }, [demos, projects, tags, orders, media, listens, timedNotes, shares, ready]);
 
   useEffect(() => {
     let currentUrl: string | undefined;
@@ -508,15 +523,19 @@ export default function Home() {
   const rapidDemo = demos.find((demo) => demo.id === rapidIds[rapidIndex]);
   const selectedStats = selected ? statsFor(selected.id) : statsFor(0);
   const selectedListens = selected ? listens.filter((listen) => listen.demoId === selected.id).slice(0, 5) : [];
+  const selectedTimedNotes = selected ? timedNotes.filter((note) => note.demoId === selected.id).sort((a, b) => a.startSeconds - b.startSeconds) : [];
   const selectedOwnerScore = selected && account ? listens.filter((listen) => listen.demoId === selected.id && listen.authorId === account.id).reduce((score, listen) => score + (listen.verdict === "up" ? 1 : -1), 0) : 0;
   const selectedFriendScore = selected && account ? listens.filter((listen) => listen.demoId === selected.id && listen.authorId !== account.id).reduce((score, listen) => score + (listen.verdict === "up" ? 1 : -1), 0) : 0;
   const rapidStats = rapidDemo ? statsFor(rapidDemo.id) : statsFor(0);
+  const rapidTimedNotes = rapidDemo ? timedNotes.filter((note) => note.demoId === rapidDemo.id).sort((a, b) => a.startSeconds - b.startSeconds) : [];
   const rapidDownSelected = rapidVote === "down";
   const rapidUpSelected = rapidVote === "up";
   const selectedListenHistory = selectedListens.length > 0 ? <div className="listen-history"><span className="eyebrow">RECENT LISTENS</span>{selectedListens.map((listen) => <div className={`listen-event ${listen.verdict}`} key={listen.eventUuid || listen.id}><b>{listen.verdict === "up" ? "↑" : "↓"}</b><span><i>{listen.authorId === account?.id ? "You" : listen.authorName}</i>{listen.note || "No note"}<small>{new Date(listen.listenedAt).toLocaleDateString("en-AU")}</small></span></div>)}</div> : null;
+  const selectedTimedNoteHistory = selectedTimedNotes.length > 0 ? <div className="timed-note-history"><span className="eyebrow">TIMED NOTES</span>{selectedTimedNotes.map((note) => <button key={note.noteUuid} onClick={() => seekTimedNote(note)}><b>{formatDuration(note.startSeconds)}–{formatDuration(note.endSeconds)}</b><span><i>{note.authorId === account?.id ? "You" : note.authorName}</i>{note.note}</span></button>)}</div> : null;
   const selectedSharing = selected && account ? selected.ownerId === account.id
     ? <div className="detail-section sharing-section"><div className="detail-section-head"><span>SHARED WITH</span><button onClick={() => setShowAccount(true)}>manage</button></div><div className="share-friends">{friends.map((friend) => { const active = shares.some((share) => share.demoUuid === selected.uuid && share.friendId === friend.id); return <button key={friend.id} className={active ? "shared" : ""} onClick={() => toggleDemoShare(selected, friend.id)}><span>{active ? "✓" : "+"}</span>{friend.displayName}</button>; })}{friends.length === 0 && <small>No friends connected.</small>}</div></div>
     : <div className="detail-section remote-source"><div className="detail-section-head"><span>SHARED BY</span></div><p>{friends.find((friend) => friend.id === selected.ownerId)?.displayName || "Friend"}</p></div> : null;
+  const rapidAnnotationTransport = audioUrl ? <section className="annotation-transport"><div className="annotation-head"><span>TIMED NOTES</span><small>Drag across the timeline to select a range</small></div><div ref={annotationRailRef} className={`annotation-rail ${rapidDuration ? "ready" : ""}`} aria-label="Drag to select a timed note range" onPointerDown={beginTimedNoteRange} onPointerMove={moveTimedNoteRange} onPointerUp={finishTimedNoteRange} onPointerCancel={() => { annotationDragStartRef.current = undefined; }}><span className="annotation-progress" style={{ width: `${rapidDuration ? rapidCurrentTime / rapidDuration * 100 : 0}%` }} />{rapidTimedNotes.map((note) => <i key={note.noteUuid} className="saved-range" style={{ left: `${rapidDuration ? note.startSeconds / rapidDuration * 100 : 0}%`, width: `${rapidDuration ? Math.max(0.7, (note.endSeconds - note.startSeconds) / rapidDuration * 100) : 0}%` }} title={`${formatDuration(note.startSeconds)}–${formatDuration(note.endSeconds)} · ${note.note}`} />)}{timedNoteRange && <i className="draft-range" style={{ left: `${timedNoteRange.start / rapidDuration * 100}%`, width: `${Math.max(0.7, (timedNoteRange.end - timedNoteRange.start) / rapidDuration * 100)}%` }} />}</div><div className="annotation-times"><span>{formatDuration(rapidCurrentTime)}</span><span>{formatDuration(rapidDuration)}</span></div>{timedNoteRange && <form className="timed-note-editor" onSubmit={saveTimedNote}><div><b>{formatDuration(timedNoteRange.start)}–{formatDuration(timedNoteRange.end)}</b><button type="button" onClick={() => { setTimedNoteRange(undefined); setTimedNoteDraft(""); }}>Cancel</button></div><textarea value={timedNoteDraft} onChange={(event) => setTimedNoteDraft(event.target.value)} rows={2} placeholder="What applies to this section?" /><button type="submit" disabled={!timedNoteDraft.trim()}>Save timed note</button></form>}{rapidTimedNotes.length > 0 && <div className="rapid-timed-notes">{rapidTimedNotes.map((note) => <button key={note.noteUuid} onClick={() => seekTimedNote(note)}><b>{formatDuration(note.startSeconds)}–{formatDuration(note.endSeconds)}</b><span>{note.note}</span><small>{note.authorId === account?.id ? "You" : note.authorName}</small></button>)}</div>}</section> : null;
   const storagePercent = storageInfo.quota ? Math.min(100, storageInfo.usage / storageInfo.quota * 100) : 0;
 
   const visibleDemos = useMemo(() => {
@@ -776,9 +795,7 @@ export default function Home() {
     if (!ids.length) { window.alert("Import some demos before starting listen mode."); return; }
     setRapidIds(ids);
     setRapidIndex(0);
-    setRapidNote("");
-    setRapidVote(undefined);
-    setRapidVoteEventUuid(undefined);
+    resetRapidResponse();
     setSelectedId(ids[0]);
     setRapidMode(true);
   }
@@ -787,6 +804,68 @@ export default function Home() {
     setRapidNote("");
     setRapidVote(undefined);
     setRapidVoteEventUuid(undefined);
+    setRapidCurrentTime(0);
+    setRapidDuration(0);
+    setTimedNoteRange(undefined);
+    setTimedNoteDraft("");
+    annotationDragStartRef.current = undefined;
+  }
+
+  function annotationSeconds(clientX: number) {
+    const rail = annotationRailRef.current;
+    if (!rail || !rapidDuration) return 0;
+    const bounds = rail.getBoundingClientRect();
+    return Math.max(0, Math.min(rapidDuration, (clientX - bounds.left) / bounds.width * rapidDuration));
+  }
+
+  function beginTimedNoteRange(event: React.PointerEvent<HTMLDivElement>) {
+    if (!rapidDuration || event.button !== 0) return;
+    const seconds = annotationSeconds(event.clientX);
+    annotationDragStartRef.current = seconds;
+    setTimedNoteRange({ start: seconds, end: seconds });
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function moveTimedNoteRange(event: React.PointerEvent<HTMLDivElement>) {
+    const origin = annotationDragStartRef.current;
+    if (origin === undefined) return;
+    const seconds = annotationSeconds(event.clientX);
+    setTimedNoteRange({ start: Math.min(origin, seconds), end: Math.max(origin, seconds) });
+  }
+
+  function finishTimedNoteRange(event: React.PointerEvent<HTMLDivElement>) {
+    const origin = annotationDragStartRef.current;
+    if (origin === undefined) return;
+    const seconds = annotationSeconds(event.clientX);
+    let start = Math.min(origin, seconds);
+    let end = Math.max(origin, seconds);
+    if (end - start < 0.5) {
+      end = Math.min(rapidDuration, start + 0.5);
+      start = Math.max(0, end - 0.5);
+    }
+    setTimedNoteRange({ start, end });
+    annotationDragStartRef.current = undefined;
+    event.currentTarget.releasePointerCapture(event.pointerId);
+  }
+
+  function saveTimedNote(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!rapidDemo || !account || !timedNoteRange || !timedNoteDraft.trim()) return;
+    const createdAt = Date.now();
+    setTimedNotes((current) => [...current, {
+      id: createdAt * 1000 + Math.floor(Math.random() * 1000), noteUuid: crypto.randomUUID(),
+      demoId: rapidDemo.id, demoUuid: rapidDemo.uuid, authorId: account.id, authorName: account.displayName,
+      startSeconds: timedNoteRange.start, endSeconds: timedNoteRange.end, note: timedNoteDraft.trim(), createdAt,
+    }]);
+    setTimedNoteRange(undefined);
+    setTimedNoteDraft("");
+  }
+
+  function seekTimedNote(note: TimedNote) {
+    const player = rapidMode && rapidDemo?.id === note.demoId ? rapidAudioRef.current : detailAudioRef.current;
+    if (!player) return;
+    player.currentTime = note.startSeconds;
+    player.play().catch(() => undefined);
   }
 
   function previousRapid() {
@@ -994,6 +1073,7 @@ export default function Home() {
     setTags(mergeTags(data.tags ?? [], data.demos.flatMap((demo) => demo.tags)));
     setMedia(data.media);
     setListens(data.listens ?? []);
+    setTimedNotes(data.timedNotes ?? []);
     setAccount(data.account);
     setFriends(data.friends ?? []);
     setShares(data.shares ?? []);
@@ -1069,7 +1149,7 @@ export default function Home() {
   }
 
   function exportBackup() {
-    const payload = JSON.stringify({ version: 6, exportedAt: new Date().toISOString(), demos, projects, tags, orders, media, listens, shares }, null, 2);
+    const payload = JSON.stringify({ version: 7, exportedAt: new Date().toISOString(), demos, projects, tags, orders, media, listens, timedNotes, shares }, null, 2);
     const url = URL.createObjectURL(new Blob([payload], { type: "application/json" }));
     const anchor = document.createElement("a");
     anchor.href = url;
@@ -1090,8 +1170,12 @@ export default function Home() {
         ...listen, eventUuid: listen.eventUuid || crypto.randomUUID(), demoUuid: listen.demoUuid || demosById.get(listen.demoId)?.uuid || "",
         authorId: listen.authorId || account?.id || "", authorName: listen.authorName || account?.displayName || "Owner", signature: listen.authorId ? listen.signature : undefined,
       }));
+      const restoredTimedNotes = (Array.isArray(data.timedNotes) ? data.timedNotes : []).map((note: TimedNote) => ({
+        ...note, noteUuid: note.noteUuid || crypto.randomUUID(), demoUuid: note.demoUuid || demosById.get(note.demoId)?.uuid || "",
+        authorId: note.authorId || account?.id || "", authorName: note.authorName || account?.displayName || "Owner", signature: note.authorId ? note.signature : undefined,
+      }));
       const restoredTags = mergeTags(Array.isArray(data.tags) ? data.tags : [], restoredDemos.flatMap((demo: Demo) => demo.tags));
-      setDemos(restoredDemos); setProjects(data.projects); setTags(restoredTags); setOrders(data.orders ?? {}); setMedia(data.media ?? []); setListens(restoredListens); setShares(data.shares ?? []);
+      setDemos(restoredDemos); setProjects(data.projects); setTags(restoredTags); setOrders(data.orders ?? {}); setMedia(data.media ?? []); setListens(restoredListens); setTimedNotes(restoredTimedNotes); setShares(data.shares ?? []);
       setSelectedId(restoredDemos[0]?.id ?? 1); setProject("All demos"); setView("library");
     } catch { window.alert("That file is not a valid Demolition backup."); }
     event.target.value = "";
@@ -1155,13 +1239,13 @@ export default function Home() {
 
             {view === "project" && project !== "Unsorted" && <aside className="candidate-panel" onDragOver={(event) => event.preventDefault()} onDrop={dropInCandidatePool}><div className="candidate-head"><div><span className="eyebrow">CANDIDATE POOL</span><h3>{projectCandidates.length} candidate {projectCandidates.length === 1 ? "track" : "tracks"}</h3></div><span>Drag into tracklist →</span></div><div className="candidate-list">{projectCandidates.map((demo) => <div key={demo.id} className="candidate-row" draggable onDragStart={() => setDraggedId(demo.id)}><button onClick={() => setSelectedId(demo.id)}><span className={`cover cover-${demo.id % 4}`}><i /></span><span><strong>{demo.title}</strong><small>{demo.bpm ? `${demo.bpm} BPM` : "BPM unknown"} · {statusLabels[demo.status]}</small></span></button><button className="promote-button" onClick={() => setOrders((current) => ({ ...current, [project]: [...(current[project] ?? []).filter((id) => id !== demo.id), demo.id] }))} aria-label={`Add ${demo.title} to tracklist`}>＋</button></div>)}{projectCandidates.length === 0 && <div className="candidate-empty"><span>✓</span><strong>No candidates</strong><small>Import demos here or drag a track out of the tracklist.</small></div>}</div><div className="candidate-drop">← Drop here to return a track to the pool</div></aside>}
 
-            {selected && (view !== "project" || project === "Unsorted") && <aside className="detail-panel"><div className="detail-top"><span className="eyebrow">SELECTED DEMO</span><button className="more-button" onClick={openEdit}>Edit</button></div><div className={`focus-cover cover-${selected.id % 4}`}><span>✳</span></div><h3>{selected.title}</h3><div className="focus-meta">{selected.bpm ? `${selected.bpm} BPM` : "BPM —"} <i>·</i> {selected.key} <i>·</i> {selected.duration}</div><button className="detect-bpm" disabled={detectingId === selected.id} onClick={detectSelectedBpm}>{detectingId === selected.id ? "◌ Analyzing tempo…" : "⌁ Detect BPM again"}</button><div className="listen-summary" aria-label={"Listen score " + selectedStats.score}><span><b>{selectedStats.up}</b> ↑</span><span><b>{selectedStats.down}</b> ↓</span><strong>{selectedStats.score > 0 ? "+" + selectedStats.score : selectedStats.score}</strong><small>{selectedStats.count} {selectedStats.count === 1 ? "listen" : "listens"} · You {selectedOwnerScore > 0 ? "+" + selectedOwnerScore : selectedOwnerScore} · Friends {selectedFriendScore > 0 ? "+" + selectedFriendScore : selectedFriendScore}</small></div>{selectedListenHistory}{audioUrl ? <><audio className="audio-player" src={audioUrl} controls preload="metadata"><track kind="captions" src="data:text/vtt,WEBVTT" srcLang="en" label="Instrumental audio" /></audio><button className="remove-copy" onClick={removeSelectedAudioCopy}>Remove local copy</button></> : <button className="audio-empty" onClick={() => attachRef.current?.click()}><span>＋</span> Attach an audio bounce</button>}<input ref={attachRef} className="sr-only" type="file" accept="audio/*,.wav,.aif,.aiff,.mp3,.m4a,.flac" onChange={attachAudio} />{selectedSharing}<div className="detail-section"><div className="detail-section-head"><span>NEXT ACTION</span><button onClick={openEdit}>edit</button></div><p className="next-action">→ {selected.nextAction || "No next action set"}</p></div><div className="detail-section"><div className="detail-section-head"><span>NOTES</span><button onClick={openEdit}>edit</button></div><p>{selected.note || "No notes yet."}</p></div><div className="detail-section"><div className="detail-section-head"><span>PROJECT</span><button onClick={openEdit}>change</button></div><div className="assigned-project"><span className="project-dot coral" />{selected.project}<span>↗</span></div></div><button className="open-demo" onClick={openEdit}>Edit demo <span>↗</span></button></aside>}
+            {selected && (view !== "project" || project === "Unsorted") && <aside className="detail-panel"><div className="detail-top"><span className="eyebrow">SELECTED DEMO</span><button className="more-button" onClick={openEdit}>Edit</button></div><div className={`focus-cover cover-${selected.id % 4}`}><span>✳</span></div><h3>{selected.title}</h3><div className="focus-meta">{selected.bpm ? `${selected.bpm} BPM` : "BPM —"} <i>·</i> {selected.key} <i>·</i> {selected.duration}</div><button className="detect-bpm" disabled={detectingId === selected.id} onClick={detectSelectedBpm}>{detectingId === selected.id ? "◌ Analyzing tempo…" : "⌁ Detect BPM again"}</button><div className="listen-summary" aria-label={"Listen score " + selectedStats.score}><span><b>{selectedStats.up}</b> ↑</span><span><b>{selectedStats.down}</b> ↓</span><strong>{selectedStats.score > 0 ? "+" + selectedStats.score : selectedStats.score}</strong><small>{selectedStats.count} {selectedStats.count === 1 ? "listen" : "listens"} · You {selectedOwnerScore > 0 ? "+" + selectedOwnerScore : selectedOwnerScore} · Friends {selectedFriendScore > 0 ? "+" + selectedFriendScore : selectedFriendScore}</small></div>{selectedListenHistory}{selectedTimedNoteHistory}{audioUrl ? <><audio ref={detailAudioRef} className="audio-player" src={audioUrl} controls preload="metadata"><track kind="captions" src="data:text/vtt,WEBVTT" srcLang="en" label="Instrumental audio" /></audio><button className="remove-copy" onClick={removeSelectedAudioCopy}>Remove local copy</button></> : <button className="audio-empty" onClick={() => attachRef.current?.click()}><span>＋</span> Attach an audio bounce</button>}<input ref={attachRef} className="sr-only" type="file" accept="audio/*,.wav,.aif,.aiff,.mp3,.m4a,.flac" onChange={attachAudio} />{selectedSharing}<div className="detail-section"><div className="detail-section-head"><span>NEXT ACTION</span><button onClick={openEdit}>edit</button></div><p className="next-action">→ {selected.nextAction || "No next action set"}</p></div><div className="detail-section"><div className="detail-section-head"><span>NOTES</span><button onClick={openEdit}>edit</button></div><p>{selected.note || "No notes yet."}</p></div><div className="detail-section"><div className="detail-section-head"><span>PROJECT</span><button onClick={openEdit}>change</button></div><div className="assigned-project"><span className="project-dot coral" />{selected.project}<span>↗</span></div></div><button className="open-demo" onClick={openEdit}>Edit demo <span>↗</span></button></aside>}
           </div></>}
           <div className="bottom-note"><span className="spark">✳</span><span><strong>{revisitDemos.length} demos in the review queue.</strong> Sorted by oldest update.</span><button onClick={() => { setView("revisit"); setProject("All demos"); }}>Open revisit queue →</button></div>
         </div>
       </section>
 
-      {rapidMode && rapidDemo && <div className="rapid-backdrop"><section className="rapid-session" aria-label="Listen mode"><header><div><span className="eyebrow">LISTEN MODE</span><strong>{rapidIndex + 1} / {rapidIds.length}</strong></div><button onClick={() => setRapidMode(false)} aria-label="End listen mode">×</button></header><div className="rapid-body"><div className={`rapid-art cover-${rapidDemo.id % 4}`}><span>✳</span></div><div className="rapid-main"><div className="rapid-title"><div><h2>{rapidDemo.title}</h2><p>{rapidDemo.bpm ? `${rapidDemo.bpm} BPM` : "BPM unknown"} · {rapidDemo.key} · {rapidDemo.duration}</p></div><select aria-label="Assign project" value={rapidDemo.project} onChange={(event) => changeRapidProject(event.target.value)}>{projectNames.map((name) => <option key={name}>{name}</option>)}</select></div>{audioUrl ? <audio ref={rapidAudioRef} className="rapid-player" src={audioUrl} controls onEnded={advanceRapid} preload="metadata"><track kind="captions" src="data:text/vtt,WEBVTT" srcLang="en" label="Demo audio" /></audio> : <div className="rapid-no-audio">No local audio copy attached</div>}<div className="rapid-vote-summary"><span>{rapidStats.up} up</span><span>{rapidStats.down} down</span><strong>Score {rapidStats.score > 0 ? `+${rapidStats.score}` : rapidStats.score}</strong></div><label className="rapid-note">Note for this listen<textarea value={rapidNote} onChange={(event) => updateRapidNote(event.target.value)} rows={3} placeholder="Optional note saved with your vote" /></label></div></div><footer><div className="rapid-controls"><button className="rapid-previous" disabled={!rapidIndex} onClick={previousRapid}><span>←</span> Previous <kbd>H</kbd></button><button className="thumb-down" aria-pressed={rapidDownSelected} onClick={() => recordListen("down")}><span>↓</span> Thumbs down <kbd>J</kbd></button><button className="thumb-up" aria-pressed={rapidUpSelected} onClick={() => recordListen("up")}><span>↑</span> Thumbs up <kbd>K</kbd></button><button className="rapid-next-track" onClick={advanceRapid}>Next <span>→</span> <kbd>L</kbd></button></div></footer></section></div>}
+      {rapidMode && rapidDemo && <div className="rapid-backdrop"><section className="rapid-session" aria-label="Listen mode"><header><div><span className="eyebrow">LISTEN MODE</span><strong>{rapidIndex + 1} / {rapidIds.length}</strong></div><button onClick={() => setRapidMode(false)} aria-label="End listen mode">×</button></header><div className="rapid-body"><div className={`rapid-art cover-${rapidDemo.id % 4}`}><span>✳</span></div><div className="rapid-main"><div className="rapid-title"><div><h2>{rapidDemo.title}</h2><p>{rapidDemo.bpm ? `${rapidDemo.bpm} BPM` : "BPM unknown"} · {rapidDemo.key} · {rapidDemo.duration}</p></div><select aria-label="Assign project" value={rapidDemo.project} onChange={(event) => changeRapidProject(event.target.value)}>{projectNames.map((name) => <option key={name}>{name}</option>)}</select></div>{audioUrl ? <audio ref={rapidAudioRef} className="rapid-player" src={audioUrl} controls onEnded={advanceRapid} onLoadedMetadata={(event) => setRapidDuration(event.currentTarget.duration || 0)} onDurationChange={(event) => setRapidDuration(event.currentTarget.duration || 0)} onTimeUpdate={(event) => setRapidCurrentTime(event.currentTarget.currentTime)} preload="metadata"><track kind="captions" src="data:text/vtt,WEBVTT" srcLang="en" label="Demo audio" /></audio> : <div className="rapid-no-audio">No local audio copy attached</div>}{rapidAnnotationTransport}<div className="rapid-vote-summary"><span>{rapidStats.up} up</span><span>{rapidStats.down} down</span><strong>Score {rapidStats.score > 0 ? `+${rapidStats.score}` : rapidStats.score}</strong></div><label className="rapid-note">Note for this listen<textarea value={rapidNote} onChange={(event) => updateRapidNote(event.target.value)} rows={3} placeholder="Optional note saved with your vote" /></label></div></div><footer><div className="rapid-controls"><button className="rapid-previous" disabled={!rapidIndex} onClick={previousRapid}><span>←</span> Previous <kbd>H</kbd></button><button className="thumb-down" aria-pressed={rapidDownSelected} onClick={() => recordListen("down")}><span>↓</span> Thumbs down <kbd>J</kbd></button><button className="thumb-up" aria-pressed={rapidUpSelected} onClick={() => recordListen("up")}><span>↑</span> Thumbs up <kbd>K</kbd></button><button className="rapid-next-track" onClick={advanceRapid}>Next <span>→</span> <kbd>L</kbd></button></div></footer></section></div>}
 
       {showAccount && account && <div className="modal-backdrop"><section className="modal mesh-modal" aria-label="Friends and sync"><button type="button" className="modal-close" onClick={() => setShowAccount(false)}>×</button><div className="eyebrow">LOCAL IDENTITY</div><h2>Friends &amp; sync</h2><form className="account-form" onSubmit={saveAccount}><div className="modal-fields"><label>Display name<input name="displayName" defaultValue={account.displayName} required /></label><label>Mesh VPN URL<input name="peerUrl" type="url" defaultValue={account.peerUrl} placeholder="http://100.64.0.10:3001" required /></label></div><span className="field-hint">Use this machine&apos;s stable VPN address. Start the server with DEMOLITION_API_HOST set to 0.0.0.0 so friends can reach it.</span><button className="secondary-button" type="submit">Save identity</button></form><div className="mesh-grid"><section><div className="detail-section-head"><span>INVITE A FRIEND</span></div><p>Create a single-use code and send it through a channel you trust.</p><button className="secondary-button" onClick={createInvite}>Create invitation</button>{pairingCode && <div className="invite-code"><textarea readOnly value={pairingCode} rows={4} aria-label="Pairing invitation code" /><button onClick={() => navigator.clipboard.writeText(pairingCode).then(() => setMeshProgress("Invitation copied."))}>Copy</button></div>}</section><section><div className="detail-section-head"><span>JOIN A FRIEND</span></div><form onSubmit={pairFriend}><textarea name="code" rows={4} placeholder="Paste their invitation code" aria-label="Friend invitation code" required /><button className="secondary-button" type="submit">Pair instance</button></form></section></div><div className="friend-list"><div className="detail-section-head"><span>CONNECTED FRIENDS</span><small>{friends.length}</small></div>{friends.map((friend) => <article key={friend.id}><span className={`peer-status ${friend.status}`} /><div><strong>{friend.displayName}</strong><small>{friend.peerUrl}</small><small>{friend.lastSyncedAt ? `Last synced ${relativeDate(friend.lastSyncedAt)}` : "Not synced yet"}</small></div><button onClick={() => syncFriend(friend)}>Sync now</button><button className="disconnect-peer" onClick={() => disconnectFriend(friend)} aria-label={`Disconnect ${friend.displayName}`}>×</button></article>)}{friends.length === 0 && <div className="friend-empty">No friends connected.</div>}</div>{meshProgress && <div className="mesh-progress" role="status">{meshProgress}</div>}<div className="mesh-security">Peer traffic stays on the VPN. Demolition also requires a separate pairing token and verifies signed rating events.</div></section></div>}
 

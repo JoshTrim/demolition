@@ -44,10 +44,11 @@ test("uses the local SQLite and managed-file backend", async () => {
       projects: [{ name: "Album", color: "blue", mood: "" }],
       demos: [{ id: 1, uuid: "demo-one", ownerId: account.id, title: "Test 12.4.19", bpm: 120, key: "C", duration: "01:00", status: "unheard", tags: ["test"], note: "", nextAction: "", rating: 0, project: "Album", updatedAt: 1, creationDate: "2019-04-12" }],
       orders: { Album: [1] }, media: [],
-      shares: [], listens: [{ id: 2, eventUuid: "listen-one", demoId: 1, demoUuid: "demo-one", authorId: account.id, authorName: account.displayName, verdict: "up", note: "Strong chorus", listenedAt: 2 }]
+      shares: [], listens: [{ id: 2, eventUuid: "listen-one", demoId: 1, demoUuid: "demo-one", authorId: account.id, authorName: account.displayName, verdict: "up", note: "Strong chorus", listenedAt: 2 }],
+      timedNotes: [{ id: 3, noteUuid: "note-one", demoId: 1, demoUuid: "demo-one", authorId: account.id, authorName: account.displayName, startSeconds: 10, endSeconds: 18.5, note: "Bass change", createdAt: 3 }]
     });
     const state = database.readWorkspace();
-    if (state.projects[0].name !== "Album" || state.tags[0].name !== "test" || state.demos[0].creationDate !== "2019-04-12" || state.demos[0].uuid !== "demo-one" || state.orders.Album[0] !== 1 || state.listens[0].verdict !== "up" || state.listens[0].note !== "Strong chorus" || state.listens[0].authorId !== account.id || !state.listens[0].signature) process.exit(1);
+    if (state.projects[0].name !== "Album" || state.tags[0].name !== "test" || state.demos[0].creationDate !== "2019-04-12" || state.demos[0].uuid !== "demo-one" || state.orders.Album[0] !== 1 || state.listens[0].verdict !== "up" || state.listens[0].note !== "Strong chorus" || state.listens[0].authorId !== account.id || !state.listens[0].signature || state.timedNotes[0].endSeconds !== 18.5 || !state.timedNotes[0].signature) process.exit(1);
   `;
   await run(process.execPath, ["--input-type=module", "-e", script], { cwd: temporaryDirectory });
 });
@@ -75,16 +76,17 @@ test("pairs local identities and exchanges signed ratings", async () => {
       projects: [], tags: [], orders: {}, media: [],
       demos: [{ id: 1, uuid: "shared-demo", ownerId: firstAccount.id, title: "Shared", bpm: 110, key: "D", duration: "01:00", status: "unheard", tags: [], note: "", nextAction: "", project: "Unsorted", updatedAt: 1 }],
       listens: [{ id: 2, eventUuid: "alex-vote", demoId: 1, demoUuid: "shared-demo", authorId: firstAccount.id, authorName: "Alex", verdict: "up", note: "owner vote", listenedAt: 2 }],
+      timedNotes: [{ id: 4, noteUuid: "alex-note", demoId: 1, demoUuid: "shared-demo", authorId: firstAccount.id, authorName: "Alex", startSeconds: 4, endSeconds: 9, note: "Intro texture", createdAt: 4 }],
       shares: [{ demoUuid: "shared-demo", friendId: secondAccount.id, shareAudio: false }]
     });
     second.mergeSyncPackage(firstAccount.id, first.buildSyncPackage(secondAccount.id));
     let secondState = second.readWorkspace();
-    if (secondState.demos[0].ownerId !== firstAccount.id || secondState.listens[0].authorName !== "Alex") process.exit(1);
+    if (secondState.demos[0].ownerId !== firstAccount.id || secondState.listens[0].authorName !== "Alex" || secondState.timedNotes[0].note !== "Intro texture") process.exit(1);
     const remoteDemo = secondState.demos[0];
-    second.writeWorkspace({ ...secondState, listens: [...secondState.listens, { id: 3, eventUuid: "blair-vote", demoId: remoteDemo.id, demoUuid: remoteDemo.uuid, authorId: secondAccount.id, authorName: "Blair", verdict: "down", note: "friend vote", listenedAt: 3 }] });
+    second.writeWorkspace({ ...secondState, listens: [...secondState.listens, { id: 3, eventUuid: "blair-vote", demoId: remoteDemo.id, demoUuid: remoteDemo.uuid, authorId: secondAccount.id, authorName: "Blair", verdict: "down", note: "friend vote", listenedAt: 3 }], timedNotes: [...secondState.timedNotes, { id: 5, noteUuid: "blair-note", demoId: remoteDemo.id, demoUuid: remoteDemo.uuid, authorId: secondAccount.id, authorName: "Blair", startSeconds: 12, endSeconds: 17, note: "Try a shorter fill", createdAt: 5 }] });
     first.mergeSyncPackage(secondAccount.id, second.buildSyncPackage(firstAccount.id));
     const firstState = first.readWorkspace();
-    if (!firstState.listens.some((listen) => listen.authorName === "Blair" && listen.verdict === "down" && listen.signature)) process.exit(1);
+    if (!firstState.listens.some((listen) => listen.authorName === "Blair" && listen.verdict === "down" && listen.signature) || !firstState.timedNotes.some((note) => note.authorName === "Blair" && note.note === "Try a shorter fill" && note.signature)) process.exit(1);
   `;
   await run(process.execPath, ["--input-type=module", "-e", script], { cwd: temporaryDirectory });
 });
@@ -103,5 +105,8 @@ test("keeps local data out of version control", async () => {
   assert.match(page, /key === "arrowdown" \|\| key === "j"/);
   assert.match(page, /key === "arrowup" \|\| key === "k"/);
   assert.match(page, /onEnded=\{advanceRapid\}/);
+  assert.match(page, /onPointerDown=\{beginTimedNoteRange\}/);
+  assert.match(page, /Save timed note/);
+  assert.match(page, /timedNotes/);
   assert.doesNotMatch(page, /localStorage\.setItem\(STORAGE_KEY/);
 });

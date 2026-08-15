@@ -73,6 +73,22 @@ database.exec(`
     FOREIGN KEY (demo_id) REFERENCES demos(id) ON DELETE CASCADE
   );
 
+  CREATE TABLE IF NOT EXISTS timed_notes (
+    id INTEGER PRIMARY KEY,
+    note_uuid TEXT NOT NULL UNIQUE,
+    demo_id INTEGER NOT NULL,
+    demo_uuid TEXT NOT NULL,
+    author_id TEXT NOT NULL,
+    author_name TEXT NOT NULL,
+    author_public_key TEXT NOT NULL,
+    start_seconds REAL NOT NULL CHECK (start_seconds >= 0),
+    end_seconds REAL NOT NULL CHECK (end_seconds >= start_seconds),
+    note TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    signature TEXT,
+    FOREIGN KEY (demo_id) REFERENCES demos(id) ON DELETE CASCADE
+  );
+
   CREATE TABLE IF NOT EXISTS project_media (
     id INTEGER PRIMARY KEY,
     project TEXT NOT NULL,
@@ -158,6 +174,7 @@ database.exec(`
   CREATE INDEX IF NOT EXISTS idx_tracklist_project_position ON tracklist(project, position);
   CREATE INDEX IF NOT EXISTS idx_listens_demo_listened ON listens(demo_id, listened_at DESC);
   CREATE INDEX IF NOT EXISTS idx_listens_demo_uuid ON listens(demo_uuid, listened_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_timed_notes_demo_range ON timed_notes(demo_uuid, start_seconds, end_seconds);
   CREATE INDEX IF NOT EXISTS idx_shares_friend ON demo_shares(friend_id, demo_uuid);
   PRAGMA optimize;
 `);
@@ -198,6 +215,26 @@ function verifyListen(listen) {
   }
 }
 
+function canonicalTimedNote(note) {
+  return JSON.stringify({
+    noteUuid: note.noteUuid, demoUuid: note.demoUuid, authorId: note.authorId,
+    startSeconds: Number(note.startSeconds), endSeconds: Number(note.endSeconds),
+    note: note.note ?? "", createdAt: Number(note.createdAt),
+  });
+}
+
+function signTimedNote(note) {
+  return sign(null, Buffer.from(canonicalTimedNote(note)), owner.private_key).toString("base64");
+}
+
+function verifyTimedNote(note) {
+  try {
+    return verify(null, Buffer.from(canonicalTimedNote(note)), note.authorPublicKey, Buffer.from(note.signature, "base64"));
+  } catch {
+    return false;
+  }
+}
+
 database.exec("BEGIN IMMEDIATE");
 try {
   const legacyDemos = database.prepare("SELECT id FROM demos WHERE uuid IS NULL OR uuid = ''").all();
@@ -229,6 +266,7 @@ const listDemos = database.prepare("SELECT * FROM demos ORDER BY updated_at DESC
 const listTracklist = database.prepare("SELECT project, demo_id, position FROM tracklist ORDER BY project, position");
 const listMedia = database.prepare("SELECT * FROM project_media ORDER BY created_at DESC");
 const listListens = database.prepare("SELECT * FROM listens ORDER BY listened_at DESC, id DESC");
+const listTimedNotes = database.prepare("SELECT * FROM timed_notes ORDER BY start_seconds, created_at");
 const listFriends = database.prepare("SELECT id, display_name, instance_id, peer_url, public_key, status, created_at, last_synced_at FROM friends ORDER BY display_name COLLATE NOCASE");
 const listShares = database.prepare("SELECT demo_uuid, friend_id, share_audio FROM demo_shares ORDER BY demo_uuid, friend_id");
 
@@ -257,6 +295,15 @@ function mapListen(row) {
     id: Number(row.id), eventUuid: row.event_uuid, demoId: Number(row.demo_id), demoUuid: row.demo_uuid,
     authorId: row.author_id, authorName: row.author_name, authorPublicKey: row.author_public_key,
     verdict: row.verdict, note: row.note, listenedAt: Number(row.listened_at), signature: row.signature,
+  };
+}
+
+function mapTimedNote(row) {
+  return {
+    id: Number(row.id), noteUuid: row.note_uuid, demoId: Number(row.demo_id), demoUuid: row.demo_uuid,
+    authorId: row.author_id, authorName: row.author_name, authorPublicKey: row.author_public_key,
+    startSeconds: Number(row.start_seconds), endSeconds: Number(row.end_seconds), note: row.note,
+    createdAt: Number(row.created_at), signature: row.signature,
   };
 }
 
@@ -290,6 +337,7 @@ export function readWorkspace() {
     url: row.url ?? undefined, createdAt: Number(row.created_at),
   }));
   const listens = listListens.all().map(mapListen);
+  const timedNotes = listTimedNotes.all().map(mapTimedNote);
   const friends = listFriends.all().map((row) => ({
     id: row.id, displayName: row.display_name, instanceId: row.instance_id,
     peerUrl: row.peer_url, publicKey: row.public_key, status: row.status,
@@ -297,7 +345,7 @@ export function readWorkspace() {
   }));
   const shares = listShares.all().map((row) => ({ demoUuid: row.demo_uuid, friendId: row.friend_id, shareAudio: Boolean(row.share_audio) }));
   return {
-    account: getAccount(), friends, shares, projects, tags, demos, orders, media, listens,
+    account: getAccount(), friends, shares, projects, tags, demos, orders, media, listens, timedNotes,
     empty: projects.length === 0 && tags.length === 0 && demos.length === 0 && media.length === 0,
   };
 }
@@ -314,6 +362,10 @@ const insertListen = database.prepare(`
   INSERT INTO listens (id, event_uuid, demo_id, demo_uuid, author_id, author_name, author_public_key, verdict, note, listened_at, signature)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
+const insertTimedNote = database.prepare(`
+  INSERT INTO timed_notes (id, note_uuid, demo_id, demo_uuid, author_id, author_name, author_public_key, start_seconds, end_seconds, note, created_at, signature)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`);
 const insertShare = database.prepare("INSERT INTO demo_shares (demo_uuid, friend_id, share_audio) VALUES (?, ?, ?)");
 
 function localizeListen(listen, demoById) {
@@ -329,11 +381,28 @@ function localizeListen(listen, demoById) {
   return normalized;
 }
 
+function localizeTimedNote(note, demoById) {
+  const normalized = {
+    ...note,
+    noteUuid: note.noteUuid || randomUUID(),
+    demoUuid: note.demoUuid || demoById.get(Number(note.demoId))?.uuid,
+    authorId: note.authorId || owner.id,
+    authorName: note.authorName || owner.display_name,
+    authorPublicKey: note.authorPublicKey || owner.public_key,
+    startSeconds: Math.max(0, Number(note.startSeconds) || 0),
+    endSeconds: Math.max(Number(note.startSeconds) || 0, Number(note.endSeconds) || 0),
+    createdAt: Number(note.createdAt) || Date.now(),
+  };
+  if (normalized.authorId === owner.id) normalized.signature = signTimedNote(normalized);
+  return normalized;
+}
+
 export function writeWorkspace(payload) {
   const projects = Array.isArray(payload.projects) ? payload.projects : [];
   const demos = Array.isArray(payload.demos) ? payload.demos : [];
   const media = Array.isArray(payload.media) ? payload.media : [];
   const listens = Array.isArray(payload.listens) ? payload.listens : [];
+  const timedNotes = Array.isArray(payload.timedNotes) ? payload.timedNotes : [];
   const shares = Array.isArray(payload.shares) ? payload.shares : [];
   const orders = payload.orders && typeof payload.orders === "object" ? payload.orders : {};
   const suppliedTags = Array.isArray(payload.tags) ? payload.tags : [];
@@ -358,7 +427,7 @@ export function writeWorkspace(payload) {
   }
   database.exec("BEGIN IMMEDIATE");
   try {
-    database.exec("DELETE FROM tracklist; DELETE FROM project_media; DELETE FROM demo_shares; DELETE FROM listens; DELETE FROM demos; DELETE FROM projects; DELETE FROM tags;");
+    database.exec("DELETE FROM tracklist; DELETE FROM project_media; DELETE FROM demo_shares; DELETE FROM timed_notes; DELETE FROM listens; DELETE FROM demos; DELETE FROM projects; DELETE FROM tags;");
     projects.forEach((project, position) => insertProject.run(project.name, project.color, project.mood ?? "", position));
     for (const tag of tagMap.values()) insertTag.run(tag.name, tag.createdAt);
     normalizedDemos.forEach((demo) => insertDemo.run(
@@ -372,6 +441,11 @@ export function writeWorkspace(payload) {
       if (!demoIds.has(Number(input.demoId)) || (input.verdict !== "up" && input.verdict !== "down")) return;
       const listen = localizeListen(input, demoById);
       insertListen.run(listen.id, listen.eventUuid, listen.demoId, listen.demoUuid, listen.authorId, listen.authorName, listen.authorPublicKey, listen.verdict, listen.note ?? "", listen.listenedAt || Date.now(), listen.signature ?? null);
+    });
+    timedNotes.forEach((input) => {
+      if (!demoIds.has(Number(input.demoId)) || !String(input.note ?? "").trim()) return;
+      const note = localizeTimedNote(input, demoById);
+      insertTimedNote.run(note.id, note.noteUuid, note.demoId, note.demoUuid, note.authorId, note.authorName, note.authorPublicKey, note.startSeconds, note.endSeconds, note.note.trim(), note.createdAt, note.signature ?? null);
     });
     shares.forEach((share) => {
       if (demoUuids.has(share.demoUuid) && friendIds.has(share.friendId)) insertShare.run(share.demoUuid, share.friendId, share.shareAudio === false ? 0 : 1);
@@ -461,7 +535,10 @@ export function buildSyncPackage(friendId) {
   const listens = listListens.all().map(mapListen).filter((listen) =>
     sharedUuids.has(listen.demoUuid) || (listen.authorId === owner.id && remoteUuids.has(listen.demoUuid)),
   );
-  return { account: getAccount(), demos: sharedRows.map((row) => syncDemo(row, friendId)), listens };
+  const timedNotes = listTimedNotes.all().map(mapTimedNote).filter((note) =>
+    sharedUuids.has(note.demoUuid) || (note.authorId === owner.id && remoteUuids.has(note.demoUuid)),
+  );
+  return { account: getAccount(), demos: sharedRows.map((row) => syncDemo(row, friendId)), listens, timedNotes };
 }
 
 function nextNumericId(table) {
@@ -474,6 +551,7 @@ export function mergeSyncPackage(friendId, payload) {
   if (!friend || payload?.account?.id !== friend.id || payload.account.publicKey !== friend.public_key) throw new Error("Peer identity does not match the paired friend");
   const incomingDemos = Array.isArray(payload.demos) ? payload.demos : [];
   const incomingListens = Array.isArray(payload.listens) ? payload.listens : [];
+  const incomingTimedNotes = Array.isArray(payload.timedNotes) ? payload.timedNotes : [];
   database.exec("BEGIN IMMEDIATE");
   try {
     for (const demo of incomingDemos) {
@@ -501,6 +579,21 @@ export function mergeSyncPackage(friendId, payload) {
         INSERT OR IGNORE INTO listens (id, event_uuid, demo_id, demo_uuid, author_id, author_name, author_public_key, verdict, note, listened_at, signature)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(nextNumericId("listens"), listen.eventUuid, demo.id, listen.demoUuid, listen.authorId, listen.authorName || "Friend", listen.authorPublicKey, listen.verdict, listen.note ?? "", listen.listenedAt, listen.signature);
+    }
+    for (const note of incomingTimedNotes) {
+      const startSeconds = Number(note.startSeconds);
+      const endSeconds = Number(note.endSeconds);
+      if (!note.noteUuid || !note.demoUuid || !note.authorId || !note.signature || !note.authorPublicKey || !String(note.note ?? "").trim() || !Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || startSeconds < 0 || endSeconds < startSeconds || !verifyTimedNote(note)) continue;
+      const demo = database.prepare("SELECT id, owner_id FROM demos WHERE uuid = ?").get(note.demoUuid);
+      if (!demo) continue;
+      const allowed = demo.owner_id === owner.id
+        ? note.authorId === friend.id && note.authorPublicKey === friend.public_key
+        : demo.owner_id === friend.id;
+      if (!allowed) continue;
+      database.prepare(`
+        INSERT OR IGNORE INTO timed_notes (id, note_uuid, demo_id, demo_uuid, author_id, author_name, author_public_key, start_seconds, end_seconds, note, created_at, signature)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(nextNumericId("timed_notes"), note.noteUuid, demo.id, note.demoUuid, note.authorId, note.authorName || "Friend", note.authorPublicKey, startSeconds, endSeconds, note.note.trim(), Number(note.createdAt) || Date.now(), note.signature);
     }
     database.prepare("UPDATE friends SET last_synced_at = ?, status = 'connected' WHERE id = ?").run(Date.now(), friendId);
     database.exec("COMMIT");
