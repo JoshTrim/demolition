@@ -1,3 +1,4 @@
+import { generateKeyPairSync, randomBytes, randomUUID, sign, timingSafeEqual, verify } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -43,7 +44,10 @@ database.exec(`
     checksum TEXT,
     file_size INTEGER,
     copy_verified_at INTEGER,
-    creation_date TEXT
+    creation_date TEXT,
+    uuid TEXT,
+    owner_id TEXT,
+    source_friend_id TEXT
   );
 
   CREATE TABLE IF NOT EXISTS tracklist (
@@ -60,6 +64,12 @@ database.exec(`
     verdict TEXT NOT NULL CHECK (verdict IN ('up', 'down')),
     note TEXT NOT NULL DEFAULT '',
     listened_at INTEGER NOT NULL,
+    event_uuid TEXT,
+    demo_uuid TEXT,
+    author_id TEXT,
+    author_name TEXT,
+    author_public_key TEXT,
+    signature TEXT,
     FOREIGN KEY (demo_id) REFERENCES demos(id) ON DELETE CASCADE
   );
 
@@ -86,13 +96,132 @@ database.exec(`
     PRIMARY KEY (entity_type, entity_id)
   );
 
+  CREATE TABLE IF NOT EXISTS owner_identity (
+    id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    instance_id TEXT NOT NULL UNIQUE,
+    public_key TEXT NOT NULL,
+    private_key TEXT NOT NULL,
+    peer_url TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS friends (
+    id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    instance_id TEXT NOT NULL UNIQUE,
+    peer_url TEXT NOT NULL,
+    public_key TEXT NOT NULL,
+    inbound_token TEXT NOT NULL UNIQUE,
+    outbound_token TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'connected',
+    created_at INTEGER NOT NULL,
+    last_synced_at INTEGER
+  );
+
+  CREATE TABLE IF NOT EXISTS pairing_invites (
+    token TEXT PRIMARY KEY,
+    expires_at INTEGER NOT NULL,
+    used_at INTEGER
+  );
+
+  CREATE TABLE IF NOT EXISTS demo_shares (
+    demo_uuid TEXT NOT NULL,
+    friend_id TEXT NOT NULL,
+    share_audio INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (demo_uuid, friend_id),
+    FOREIGN KEY (friend_id) REFERENCES friends(id) ON DELETE CASCADE
+  );
+`);
+
+function addColumn(table, column, definition) {
+  const columns = database.prepare(`PRAGMA table_info(${table})`).all();
+  if (!columns.some((item) => item.name === column)) database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+
+addColumn("demos", "uuid", "TEXT");
+addColumn("demos", "owner_id", "TEXT");
+addColumn("demos", "source_friend_id", "TEXT");
+addColumn("listens", "event_uuid", "TEXT");
+addColumn("listens", "demo_uuid", "TEXT");
+addColumn("listens", "author_id", "TEXT");
+addColumn("listens", "author_name", "TEXT");
+addColumn("listens", "author_public_key", "TEXT");
+addColumn("listens", "signature", "TEXT");
+
+database.exec(`
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_demos_uuid ON demos(uuid) WHERE uuid IS NOT NULL;
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_listens_event_uuid ON listens(event_uuid) WHERE event_uuid IS NOT NULL;
   CREATE INDEX IF NOT EXISTS idx_demos_project ON demos(project);
   CREATE INDEX IF NOT EXISTS idx_demos_status_updated ON demos(status, updated_at);
   CREATE INDEX IF NOT EXISTS idx_media_project_created ON project_media(project, created_at);
   CREATE INDEX IF NOT EXISTS idx_tracklist_project_position ON tracklist(project, position);
   CREATE INDEX IF NOT EXISTS idx_listens_demo_listened ON listens(demo_id, listened_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_listens_demo_uuid ON listens(demo_uuid, listened_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_shares_friend ON demo_shares(friend_id, demo_uuid);
   PRAGMA optimize;
 `);
+
+function createOwner() {
+  const existing = database.prepare("SELECT * FROM owner_identity LIMIT 1").get();
+  if (existing) return existing;
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const owner = {
+    id: randomUUID(), display_name: "Josh", instance_id: randomUUID(),
+    public_key: publicKey.export({ type: "spki", format: "pem" }),
+    private_key: privateKey.export({ type: "pkcs8", format: "pem" }),
+    peer_url: "http://127.0.0.1:3001", created_at: Date.now(),
+  };
+  database.prepare("INSERT INTO owner_identity (id, display_name, instance_id, public_key, private_key, peer_url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .run(owner.id, owner.display_name, owner.instance_id, owner.public_key, owner.private_key, owner.peer_url, owner.created_at);
+  return owner;
+}
+
+const owner = createOwner();
+
+function canonicalListen(listen) {
+  return JSON.stringify({
+    eventUuid: listen.eventUuid, demoUuid: listen.demoUuid, authorId: listen.authorId,
+    verdict: listen.verdict, note: listen.note ?? "", listenedAt: Number(listen.listenedAt),
+  });
+}
+
+function signListen(listen) {
+  return sign(null, Buffer.from(canonicalListen(listen)), owner.private_key).toString("base64");
+}
+
+function verifyListen(listen) {
+  try {
+    return verify(null, Buffer.from(canonicalListen(listen)), listen.authorPublicKey, Buffer.from(listen.signature, "base64"));
+  } catch {
+    return false;
+  }
+}
+
+database.exec("BEGIN IMMEDIATE");
+try {
+  const legacyDemos = database.prepare("SELECT id FROM demos WHERE uuid IS NULL OR uuid = ''").all();
+  const updateDemoIdentity = database.prepare("UPDATE demos SET uuid = ?, owner_id = COALESCE(NULLIF(owner_id, ''), ?) WHERE id = ?");
+  for (const demo of legacyDemos) updateDemoIdentity.run(randomUUID(), owner.id, demo.id);
+  database.prepare("UPDATE demos SET owner_id = ? WHERE owner_id IS NULL OR owner_id = ''").run(owner.id);
+  const legacyListens = database.prepare(`
+    SELECT listens.*, demos.uuid AS resolved_demo_uuid
+    FROM listens JOIN demos ON demos.id = listens.demo_id
+    WHERE listens.event_uuid IS NULL OR listens.event_uuid = '' OR listens.author_id IS NULL OR listens.author_id = ''
+  `).all();
+  const updateListenIdentity = database.prepare("UPDATE listens SET event_uuid = ?, demo_uuid = ?, author_id = ?, author_name = ?, author_public_key = ?, signature = ? WHERE id = ?");
+  for (const row of legacyListens) {
+    const listen = {
+      eventUuid: row.event_uuid || randomUUID(), demoUuid: row.demo_uuid || row.resolved_demo_uuid,
+      authorId: owner.id, verdict: row.verdict, note: row.note, listenedAt: Number(row.listened_at),
+    };
+    updateListenIdentity.run(listen.eventUuid, listen.demoUuid, owner.id, owner.display_name, owner.public_key, signListen(listen), row.id);
+  }
+  database.exec("COMMIT");
+} catch (error) {
+  database.exec("ROLLBACK");
+  throw error;
+}
 
 const listProjects = database.prepare("SELECT name, color, mood FROM projects ORDER BY position");
 const listTags = database.prepare("SELECT name, created_at FROM tags ORDER BY name COLLATE NOCASE");
@@ -100,19 +229,56 @@ const listDemos = database.prepare("SELECT * FROM demos ORDER BY updated_at DESC
 const listTracklist = database.prepare("SELECT project, demo_id, position FROM tracklist ORDER BY project, position");
 const listMedia = database.prepare("SELECT * FROM project_media ORDER BY created_at DESC");
 const listListens = database.prepare("SELECT * FROM listens ORDER BY listened_at DESC, id DESC");
+const listFriends = database.prepare("SELECT id, display_name, instance_id, peer_url, public_key, status, created_at, last_synced_at FROM friends ORDER BY display_name COLLATE NOCASE");
+const listShares = database.prepare("SELECT demo_uuid, friend_id, share_audio FROM demo_shares ORDER BY demo_uuid, friend_id");
 
-export function readWorkspace() {
-  const projects = listProjects.all();
-  const tags = listTags.all().map((row) => ({ name: row.name, createdAt: Number(row.created_at) }));
-  const demos = listDemos.all().map((row) => ({
-    id: Number(row.id), title: row.title, bpm: Number(row.bpm), key: row.musical_key,
-    duration: row.duration, status: row.status, tags: JSON.parse(row.tags_json || "[]"),
-    note: row.note, nextAction: row.next_action, rating: Number(row.rating), project: row.project,
+function publicOwner(row = owner) {
+  return {
+    id: row.id, displayName: row.display_name, instanceId: row.instance_id,
+    publicKey: row.public_key, peerUrl: row.peer_url, createdAt: Number(row.created_at),
+  };
+}
+
+function mapDemo(row) {
+  return {
+    id: Number(row.id), uuid: row.uuid, ownerId: row.owner_id, sourceFriendId: row.source_friend_id ?? undefined,
+    title: row.title, bpm: Number(row.bpm), key: row.musical_key, duration: row.duration,
+    status: row.status, tags: JSON.parse(row.tags_json || "[]"), note: row.note,
+    nextAction: row.next_action, rating: Number(row.rating), project: row.project,
     updatedAt: Number(row.updated_at), audioName: row.audio_name ?? undefined,
     checksum: row.checksum ?? undefined, fileSize: row.file_size == null ? undefined : Number(row.file_size),
     copyVerifiedAt: row.copy_verified_at == null ? undefined : Number(row.copy_verified_at),
     creationDate: row.creation_date ?? undefined,
-  }));
+  };
+}
+
+function mapListen(row) {
+  return {
+    id: Number(row.id), eventUuid: row.event_uuid, demoId: Number(row.demo_id), demoUuid: row.demo_uuid,
+    authorId: row.author_id, authorName: row.author_name, authorPublicKey: row.author_public_key,
+    verdict: row.verdict, note: row.note, listenedAt: Number(row.listened_at), signature: row.signature,
+  };
+}
+
+export function getAccount() {
+  return publicOwner(database.prepare("SELECT * FROM owner_identity LIMIT 1").get());
+}
+
+export function updateAccount({ displayName, peerUrl }) {
+  const name = String(displayName ?? "").trim();
+  const url = String(peerUrl ?? "").trim().replace(/\/$/, "");
+  if (!name) throw new Error("Display name is required");
+  if (url && !/^https?:\/\//i.test(url)) throw new Error("Peer URL must begin with http:// or https://");
+  database.prepare("UPDATE owner_identity SET display_name = ?, peer_url = ? WHERE id = ?").run(name, url, owner.id);
+  owner.display_name = name;
+  owner.peer_url = url;
+  return getAccount();
+}
+
+export function readWorkspace() {
+  const projects = listProjects.all();
+  const tags = listTags.all().map((row) => ({ name: row.name, createdAt: Number(row.created_at) }));
+  const demos = listDemos.all().map(mapDemo);
   const orders = {};
   for (const row of listTracklist.all()) {
     orders[row.project] ??= [];
@@ -123,58 +289,92 @@ export function readWorkspace() {
     title: row.title, note: row.note, fileName: row.file_name ?? undefined,
     url: row.url ?? undefined, createdAt: Number(row.created_at),
   }));
-  const listens = listListens.all().map((row) => ({
-    id: Number(row.id), demoId: Number(row.demo_id), verdict: row.verdict,
-    note: row.note, listenedAt: Number(row.listened_at),
+  const listens = listListens.all().map(mapListen);
+  const friends = listFriends.all().map((row) => ({
+    id: row.id, displayName: row.display_name, instanceId: row.instance_id,
+    peerUrl: row.peer_url, publicKey: row.public_key, status: row.status,
+    createdAt: Number(row.created_at), lastSyncedAt: row.last_synced_at == null ? undefined : Number(row.last_synced_at),
   }));
-  return { projects, tags, demos, orders, media, listens, empty: projects.length === 0 && tags.length === 0 && demos.length === 0 && media.length === 0 };
+  const shares = listShares.all().map((row) => ({ demoUuid: row.demo_uuid, friendId: row.friend_id, shareAudio: Boolean(row.share_audio) }));
+  return {
+    account: getAccount(), friends, shares, projects, tags, demos, orders, media, listens,
+    empty: projects.length === 0 && tags.length === 0 && demos.length === 0 && media.length === 0,
+  };
 }
 
 const insertProject = database.prepare("INSERT INTO projects (name, color, mood, position) VALUES (?, ?, ?, ?)");
 const insertTag = database.prepare("INSERT INTO tags (name, created_at) VALUES (?, ?)");
 const insertDemo = database.prepare(`
-  INSERT INTO demos (id, title, bpm, musical_key, duration, status, tags_json, note, next_action, rating, project, updated_at, audio_name, checksum, file_size, copy_verified_at, creation_date)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  INSERT INTO demos (id, uuid, owner_id, source_friend_id, title, bpm, musical_key, duration, status, tags_json, note, next_action, rating, project, updated_at, audio_name, checksum, file_size, copy_verified_at, creation_date)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 const insertTrack = database.prepare("INSERT INTO tracklist (project, demo_id, position) VALUES (?, ?, ?)");
 const insertMedia = database.prepare("INSERT INTO project_media (id, project, kind, source, title, note, file_name, url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
-const insertListen = database.prepare("INSERT INTO listens (id, demo_id, verdict, note, listened_at) VALUES (?, ?, ?, ?, ?)");
+const insertListen = database.prepare(`
+  INSERT INTO listens (id, event_uuid, demo_id, demo_uuid, author_id, author_name, author_public_key, verdict, note, listened_at, signature)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`);
+const insertShare = database.prepare("INSERT INTO demo_shares (demo_uuid, friend_id, share_audio) VALUES (?, ?, ?)");
+
+function localizeListen(listen, demoById) {
+  const demoUuid = listen.demoUuid || demoById.get(Number(listen.demoId))?.uuid;
+  const eventUuid = listen.eventUuid || randomUUID();
+  const authorId = listen.authorId || owner.id;
+  const normalized = {
+    ...listen, eventUuid, demoUuid, authorId,
+    authorName: listen.authorName || owner.display_name,
+    authorPublicKey: listen.authorPublicKey || owner.public_key,
+  };
+  if (authorId === owner.id) normalized.signature = signListen(normalized);
+  return normalized;
+}
 
 export function writeWorkspace(payload) {
   const projects = Array.isArray(payload.projects) ? payload.projects : [];
   const demos = Array.isArray(payload.demos) ? payload.demos : [];
   const media = Array.isArray(payload.media) ? payload.media : [];
   const listens = Array.isArray(payload.listens) ? payload.listens : [];
+  const shares = Array.isArray(payload.shares) ? payload.shares : [];
   const orders = payload.orders && typeof payload.orders === "object" ? payload.orders : {};
   const suppliedTags = Array.isArray(payload.tags) ? payload.tags : [];
+  const existingUuids = new Map(database.prepare("SELECT id, uuid FROM demos").all().map((row) => [Number(row.id), row.uuid]));
+  const normalizedDemos = demos.map((demo) => ({
+    ...demo, uuid: demo.uuid || existingUuids.get(Number(demo.id)) || randomUUID(), ownerId: demo.ownerId || owner.id,
+  }));
+  const demoById = new Map(normalizedDemos.map((demo) => [Number(demo.id), demo]));
+  const demoIds = new Set(demoById.keys());
+  const demoUuids = new Set(normalizedDemos.map((demo) => demo.uuid));
+  const friendIds = new Set(listFriends.all().map((friend) => friend.id));
   const tagMap = new Map();
   for (const tag of suppliedTags) {
     const name = String(tag?.name ?? "").trim();
     if (name) tagMap.set(name.toLocaleLowerCase(), { name, createdAt: Number(tag.createdAt) || Date.now() });
   }
-  for (const demo of demos) {
+  for (const demo of normalizedDemos) {
     for (const value of Array.isArray(demo.tags) ? demo.tags : []) {
       const name = String(value).trim();
       if (name && !tagMap.has(name.toLocaleLowerCase())) tagMap.set(name.toLocaleLowerCase(), { name, createdAt: Date.now() });
     }
   }
-  const demoIds = new Set(demos.map((demo) => Number(demo.id)));
   database.exec("BEGIN IMMEDIATE");
   try {
-    database.exec("DELETE FROM tracklist; DELETE FROM project_media; DELETE FROM listens; DELETE FROM demos; DELETE FROM projects; DELETE FROM tags;");
+    database.exec("DELETE FROM tracklist; DELETE FROM project_media; DELETE FROM demo_shares; DELETE FROM listens; DELETE FROM demos; DELETE FROM projects; DELETE FROM tags;");
     projects.forEach((project, position) => insertProject.run(project.name, project.color, project.mood ?? "", position));
     for (const tag of tagMap.values()) insertTag.run(tag.name, tag.createdAt);
-    demos.forEach((demo) => insertDemo.run(
-      demo.id, demo.title, demo.bpm || 0, demo.key || "—", demo.duration || "00:00", demo.status,
-      JSON.stringify(Array.isArray(demo.tags) ? demo.tags : []), demo.note ?? "", demo.nextAction ?? "",
-      demo.rating || 0, demo.project || "Unsorted", demo.updatedAt || Date.now(), demo.audioName ?? null,
-      demo.checksum ?? null, demo.fileSize ?? null, demo.copyVerifiedAt ?? null, demo.creationDate ?? null,
+    normalizedDemos.forEach((demo) => insertDemo.run(
+      demo.id, demo.uuid, demo.ownerId, demo.sourceFriendId ?? null, demo.title, demo.bpm || 0, demo.key || "—",
+      demo.duration || "00:00", demo.status, JSON.stringify(Array.isArray(demo.tags) ? demo.tags : []), demo.note ?? "",
+      demo.nextAction ?? "", demo.rating || 0, demo.project || "Unsorted", demo.updatedAt || Date.now(),
+      demo.audioName ?? null, demo.checksum ?? null, demo.fileSize ?? null, demo.copyVerifiedAt ?? null, demo.creationDate ?? null,
     ));
     media.forEach((item) => insertMedia.run(item.id, item.project, item.kind, item.source, item.title, item.note ?? "", item.fileName ?? null, item.url ?? null, item.createdAt || Date.now()));
-    listens.forEach((listen) => {
-      if (demoIds.has(Number(listen.demoId)) && (listen.verdict === "up" || listen.verdict === "down")) {
-        insertListen.run(listen.id, listen.demoId, listen.verdict, listen.note ?? "", listen.listenedAt || Date.now());
-      }
+    listens.forEach((input) => {
+      if (!demoIds.has(Number(input.demoId)) || (input.verdict !== "up" && input.verdict !== "down")) return;
+      const listen = localizeListen(input, demoById);
+      insertListen.run(listen.id, listen.eventUuid, listen.demoId, listen.demoUuid, listen.authorId, listen.authorName, listen.authorPublicKey, listen.verdict, listen.note ?? "", listen.listenedAt || Date.now(), listen.signature ?? null);
+    });
+    shares.forEach((share) => {
+      if (demoUuids.has(share.demoUuid) && friendIds.has(share.friendId)) insertShare.run(share.demoUuid, share.friendId, share.shareAudio === false ? 0 : 1);
     });
     for (const [project, ids] of Object.entries(orders)) {
       if (!Array.isArray(ids)) continue;
@@ -185,6 +385,154 @@ export function writeWorkspace(payload) {
     database.exec("ROLLBACK");
     throw error;
   }
+}
+
+export function createPairingInvite() {
+  if (!owner.peer_url || /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(owner.peer_url)) throw new Error("Set this instance's mesh VPN URL before creating an invitation");
+  const token = randomBytes(32).toString("base64url");
+  const expiresAt = Date.now() + 24 * 60 * 60 * 1000;
+  database.prepare("INSERT INTO pairing_invites (token, expires_at) VALUES (?, ?)").run(token, expiresAt);
+  return Buffer.from(JSON.stringify({ version: 1, peerUrl: owner.peer_url, token }), "utf8").toString("base64url");
+}
+
+export function decodePairingInvite(code) {
+  try {
+    const parsed = JSON.parse(Buffer.from(String(code).trim(), "base64url").toString("utf8"));
+    if (parsed.version !== 1 || !parsed.peerUrl || !parsed.token) throw new Error();
+    return { peerUrl: String(parsed.peerUrl).replace(/\/$/, ""), token: String(parsed.token) };
+  } catch {
+    throw new Error("Invalid pairing invitation");
+  }
+}
+
+export function acceptPairing({ inviteToken, peer, tokenForRemote }) {
+  const invitation = database.prepare("SELECT * FROM pairing_invites WHERE token = ?").get(inviteToken);
+  if (!invitation || invitation.used_at || Number(invitation.expires_at) < Date.now()) throw new Error("This invitation is invalid or expired");
+  if (!peer?.id || !peer?.instanceId || !peer?.publicKey || !peer?.peerUrl || !tokenForRemote) throw new Error("Peer identity is incomplete");
+  const tokenForCaller = randomBytes(32).toString("base64url");
+  upsertFriend(peer, tokenForCaller, tokenForRemote);
+  database.prepare("UPDATE pairing_invites SET used_at = ? WHERE token = ?").run(Date.now(), inviteToken);
+  return { account: getAccount(), tokenForCaller };
+}
+
+export function upsertFriend(peer, inboundToken, outboundToken) {
+  database.prepare(`
+    INSERT INTO friends (id, display_name, instance_id, peer_url, public_key, inbound_token, outbound_token, status, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'connected', ?)
+    ON CONFLICT(id) DO UPDATE SET display_name = excluded.display_name, instance_id = excluded.instance_id,
+      peer_url = excluded.peer_url, public_key = excluded.public_key, inbound_token = excluded.inbound_token,
+      outbound_token = excluded.outbound_token, status = 'connected'
+  `).run(peer.id, peer.displayName, peer.instanceId, String(peer.peerUrl).replace(/\/$/, ""), peer.publicKey, inboundToken, outboundToken, Date.now());
+}
+
+export function friendWithSecrets(id) {
+  return database.prepare("SELECT * FROM friends WHERE id = ?").get(id);
+}
+
+export function authenticatePeer(token) {
+  if (!token) return undefined;
+  for (const friend of database.prepare("SELECT * FROM friends WHERE status = 'connected'").all()) {
+    const expected = Buffer.from(friend.inbound_token);
+    const actual = Buffer.from(token);
+    if (expected.length === actual.length && timingSafeEqual(expected, actual)) return friend;
+  }
+  return undefined;
+}
+
+function syncDemo(row, friendId) {
+  const stored = getStoredFile("audio", Number(row.id));
+  const share = database.prepare("SELECT share_audio FROM demo_shares WHERE demo_uuid = ? AND friend_id = ?").get(row.uuid, friendId);
+  const demo = mapDemo(row);
+  delete demo.id;
+  delete demo.project;
+  delete demo.note;
+  delete demo.nextAction;
+  delete demo.sourceFriendId;
+  return { ...demo, audioAvailable: Boolean(stored && share?.share_audio), audioMimeType: stored?.mime_type };
+}
+
+export function buildSyncPackage(friendId) {
+  const sharedRows = database.prepare(`
+    SELECT demos.* FROM demos JOIN demo_shares ON demo_shares.demo_uuid = demos.uuid
+    WHERE demo_shares.friend_id = ? AND demos.owner_id = ?
+  `).all(friendId, owner.id);
+  const sharedUuids = new Set(sharedRows.map((row) => row.uuid));
+  const remoteUuids = new Set(database.prepare("SELECT uuid FROM demos WHERE owner_id = ?").all(friendId).map((row) => row.uuid));
+  const listens = listListens.all().map(mapListen).filter((listen) =>
+    sharedUuids.has(listen.demoUuid) || (listen.authorId === owner.id && remoteUuids.has(listen.demoUuid)),
+  );
+  return { account: getAccount(), demos: sharedRows.map((row) => syncDemo(row, friendId)), listens };
+}
+
+function nextNumericId(table) {
+  const maximum = Number(database.prepare(`SELECT COALESCE(MAX(id), 0) AS value FROM ${table}`).get().value);
+  return Math.max(Date.now() * 1000 + Math.floor(Math.random() * 1000), maximum + 1);
+}
+
+export function mergeSyncPackage(friendId, payload) {
+  const friend = friendWithSecrets(friendId);
+  if (!friend || payload?.account?.id !== friend.id || payload.account.publicKey !== friend.public_key) throw new Error("Peer identity does not match the paired friend");
+  const incomingDemos = Array.isArray(payload.demos) ? payload.demos : [];
+  const incomingListens = Array.isArray(payload.listens) ? payload.listens : [];
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    for (const demo of incomingDemos) {
+      if (!demo.uuid || demo.ownerId !== friend.id) continue;
+      const existing = database.prepare("SELECT * FROM demos WHERE uuid = ?").get(demo.uuid);
+      if (existing && existing.owner_id !== friend.id) continue;
+      if (existing) {
+        database.prepare(`
+          UPDATE demos SET title = ?, bpm = ?, musical_key = ?, duration = ?, tags_json = ?, updated_at = ?,
+            checksum = ?, file_size = ?, creation_date = ?, source_friend_id = ? WHERE uuid = ?
+        `).run(demo.title, demo.bpm || 0, demo.key || "—", demo.duration || "00:00", JSON.stringify(demo.tags ?? []), demo.updatedAt || Date.now(), demo.checksum ?? null, demo.fileSize ?? null, demo.creationDate ?? null, friend.id, demo.uuid);
+      } else {
+        insertDemo.run(nextNumericId("demos"), demo.uuid, friend.id, friend.id, demo.title, demo.bpm || 0, demo.key || "—", demo.duration || "00:00", "unheard", JSON.stringify(demo.tags ?? []), "", "", 0, "Unsorted", demo.updatedAt || Date.now(), null, demo.checksum ?? null, demo.fileSize ?? null, null, demo.creationDate ?? null);
+      }
+    }
+    for (const listen of incomingListens) {
+      if (!listen.eventUuid || !listen.demoUuid || !listen.authorId || !listen.signature || !listen.authorPublicKey || (listen.verdict !== "up" && listen.verdict !== "down") || !verifyListen(listen)) continue;
+      const demo = database.prepare("SELECT id, owner_id FROM demos WHERE uuid = ?").get(listen.demoUuid);
+      if (!demo) continue;
+      const allowed = demo.owner_id === owner.id
+        ? listen.authorId === friend.id && listen.authorPublicKey === friend.public_key
+        : demo.owner_id === friend.id;
+      if (!allowed) continue;
+      database.prepare(`
+        INSERT OR IGNORE INTO listens (id, event_uuid, demo_id, demo_uuid, author_id, author_name, author_public_key, verdict, note, listened_at, signature)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(nextNumericId("listens"), listen.eventUuid, demo.id, listen.demoUuid, listen.authorId, listen.authorName || "Friend", listen.authorPublicKey, listen.verdict, listen.note ?? "", listen.listenedAt, listen.signature);
+    }
+    database.prepare("UPDATE friends SET last_synced_at = ?, status = 'connected' WHERE id = ?").run(Date.now(), friendId);
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+  return incomingDemos.filter((demo) => demo.audioAvailable).map((demo) => demo.uuid);
+}
+
+export function demoByUuid(uuid) {
+  return database.prepare("SELECT * FROM demos WHERE uuid = ?").get(uuid);
+}
+
+export function markPeerAudioStored(demoId, fileName, sizeBytes) {
+  database.prepare("UPDATE demos SET audio_name = ?, file_size = ?, copy_verified_at = ? WHERE id = ?")
+    .run(fileName, sizeBytes, Date.now(), demoId);
+}
+
+export function canFriendAccessAudio(friendId, demoUuid) {
+  return Boolean(database.prepare(`
+    SELECT 1 FROM demo_shares JOIN demos ON demos.uuid = demo_shares.demo_uuid
+    WHERE demo_shares.friend_id = ? AND demo_shares.demo_uuid = ? AND demo_shares.share_audio = 1 AND demos.owner_id = ?
+  `).get(friendId, demoUuid, owner.id));
+}
+
+export function markFriendSyncError(friendId) {
+  database.prepare("UPDATE friends SET status = 'error' WHERE id = ?").run(friendId);
+}
+
+export function removeFriend(friendId) {
+  database.prepare("DELETE FROM friends WHERE id = ?").run(friendId);
 }
 
 export function getStoredFile(type, id) {

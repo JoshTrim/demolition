@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -39,14 +39,52 @@ test("uses the local SQLite and managed-file backend", async () => {
   const databaseModule = new URL("../server/database.mjs", import.meta.url).href;
   const script = `
     const database = await import(${JSON.stringify(databaseModule)} + "?test=" + Date.now());
+    const account = database.getAccount();
     database.writeWorkspace({
       projects: [{ name: "Album", color: "blue", mood: "" }],
-      demos: [{ id: 1, title: "Test 12.4.19", bpm: 120, key: "C", duration: "01:00", status: "unheard", tags: ["test"], note: "", nextAction: "", rating: 0, project: "Album", updatedAt: 1, creationDate: "2019-04-12" }],
+      demos: [{ id: 1, uuid: "demo-one", ownerId: account.id, title: "Test 12.4.19", bpm: 120, key: "C", duration: "01:00", status: "unheard", tags: ["test"], note: "", nextAction: "", rating: 0, project: "Album", updatedAt: 1, creationDate: "2019-04-12" }],
       orders: { Album: [1] }, media: [],
-      listens: [{ id: 2, demoId: 1, verdict: "up", note: "Strong chorus", listenedAt: 2 }]
+      shares: [], listens: [{ id: 2, eventUuid: "listen-one", demoId: 1, demoUuid: "demo-one", authorId: account.id, authorName: account.displayName, verdict: "up", note: "Strong chorus", listenedAt: 2 }]
     });
     const state = database.readWorkspace();
-    if (state.projects[0].name !== "Album" || state.tags[0].name !== "test" || state.demos[0].creationDate !== "2019-04-12" || state.orders.Album[0] !== 1 || state.listens[0].verdict !== "up" || state.listens[0].note !== "Strong chorus") process.exit(1);
+    if (state.projects[0].name !== "Album" || state.tags[0].name !== "test" || state.demos[0].creationDate !== "2019-04-12" || state.demos[0].uuid !== "demo-one" || state.orders.Album[0] !== 1 || state.listens[0].verdict !== "up" || state.listens[0].note !== "Strong chorus" || state.listens[0].authorId !== account.id || !state.listens[0].signature) process.exit(1);
+  `;
+  await run(process.execPath, ["--input-type=module", "-e", script], { cwd: temporaryDirectory });
+});
+
+test("pairs local identities and exchanges signed ratings", async () => {
+  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "demolition-peers-test-"));
+  const firstDirectory = path.join(temporaryDirectory, "first");
+  const secondDirectory = path.join(temporaryDirectory, "second");
+  await Promise.all([mkdir(firstDirectory), mkdir(secondDirectory)]);
+  const databaseModule = new URL("../server/database.mjs", import.meta.url).href;
+  const script = `
+    process.chdir(${JSON.stringify(firstDirectory)});
+    const first = await import(${JSON.stringify(databaseModule)} + "?peer=first-" + Date.now());
+    first.updateAccount({ displayName: "Alex", peerUrl: "http://first.mesh:3001" });
+    process.chdir(${JSON.stringify(secondDirectory)});
+    const second = await import(${JSON.stringify(databaseModule)} + "?peer=second-" + Date.now());
+    second.updateAccount({ displayName: "Blair", peerUrl: "http://second.mesh:3001" });
+    const invitation = second.decodePairingInvite(first.createPairingInvite());
+    const firstAccount = first.getAccount();
+    const secondAccount = second.getAccount();
+    const tokenForFirst = "second-accepts-first-token";
+    const accepted = first.acceptPairing({ inviteToken: invitation.token, peer: secondAccount, tokenForRemote: tokenForFirst });
+    second.upsertFriend(accepted.account, tokenForFirst, accepted.tokenForCaller);
+    first.writeWorkspace({
+      projects: [], tags: [], orders: {}, media: [],
+      demos: [{ id: 1, uuid: "shared-demo", ownerId: firstAccount.id, title: "Shared", bpm: 110, key: "D", duration: "01:00", status: "unheard", tags: [], note: "", nextAction: "", project: "Unsorted", updatedAt: 1 }],
+      listens: [{ id: 2, eventUuid: "alex-vote", demoId: 1, demoUuid: "shared-demo", authorId: firstAccount.id, authorName: "Alex", verdict: "up", note: "owner vote", listenedAt: 2 }],
+      shares: [{ demoUuid: "shared-demo", friendId: secondAccount.id, shareAudio: false }]
+    });
+    second.mergeSyncPackage(firstAccount.id, first.buildSyncPackage(secondAccount.id));
+    let secondState = second.readWorkspace();
+    if (secondState.demos[0].ownerId !== firstAccount.id || secondState.listens[0].authorName !== "Alex") process.exit(1);
+    const remoteDemo = secondState.demos[0];
+    second.writeWorkspace({ ...secondState, listens: [...secondState.listens, { id: 3, eventUuid: "blair-vote", demoId: remoteDemo.id, demoUuid: remoteDemo.uuid, authorId: secondAccount.id, authorName: "Blair", verdict: "down", note: "friend vote", listenedAt: 3 }] });
+    first.mergeSyncPackage(secondAccount.id, second.buildSyncPackage(firstAccount.id));
+    const firstState = first.readWorkspace();
+    if (!firstState.listens.some((listen) => listen.authorName === "Blair" && listen.verdict === "down" && listen.signature)) process.exit(1);
   `;
   await run(process.execPath, ["--input-type=module", "-e", script], { cwd: temporaryDirectory });
 });

@@ -6,6 +6,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 type Status = "unheard" | "revisit" | "shaping" | "finished";
 type Demo = {
   id: number;
+  uuid: string;
+  ownerId: string;
+  sourceFriendId?: string;
   title: string;
   bpm: number;
   key: string;
@@ -25,8 +28,15 @@ type Demo = {
 };
 type Project = { name: string; color: "coral" | "yellow" | "blue" | "violet"; mood?: string };
 type TagDefinition = { name: string; createdAt: number };
-type ListenEvent = { id: number; demoId: number; verdict: "up" | "down"; note: string; listenedAt: number };
+type ListenEvent = {
+  id: number; eventUuid: string; demoId: number; demoUuid: string; authorId: string;
+  authorName: string; authorPublicKey?: string; verdict: "up" | "down"; note: string;
+  listenedAt: number; signature?: string;
+};
 type ListenStats = { up: number; down: number; score: number; count: number; lastAt?: number };
+type Account = { id: string; displayName: string; instanceId: string; publicKey: string; peerUrl: string; createdAt: number };
+type Friend = { id: string; displayName: string; instanceId: string; peerUrl: string; publicKey: string; status: string; createdAt: number; lastSyncedAt?: number };
+type DemoShare = { demoUuid: string; friendId: string; shareAudio: boolean };
 type ProjectMedia = {
   id: number;
   project: string;
@@ -57,12 +67,12 @@ function apiUrl(path: string) {
 async function loadWorkspace() {
   const response = await fetch(apiUrl("/api/state"));
   if (!response.ok) throw new Error("The local database is unavailable");
-  return response.json() as Promise<{ demos: Demo[]; projects: Project[]; tags: TagDefinition[]; orders: Record<string, number[]>; media: ProjectMedia[]; listens: ListenEvent[]; empty: boolean }>;
+  return response.json() as Promise<{ account: Account; friends: Friend[]; shares: DemoShare[]; demos: Demo[]; projects: Project[]; tags: TagDefinition[]; orders: Record<string, number[]>; media: ProjectMedia[]; listens: ListenEvent[]; empty: boolean }>;
 }
 
 let saveQueue: Promise<void> = Promise.resolve();
 
-function saveWorkspace(payload: { demos: Demo[]; projects: Project[]; tags: TagDefinition[]; orders: Record<string, number[]>; media: ProjectMedia[]; listens: ListenEvent[] }) {
+function saveWorkspace(payload: { demos: Demo[]; projects: Project[]; tags: TagDefinition[]; orders: Record<string, number[]>; media: ProjectMedia[]; listens: ListenEvent[]; shares: DemoShare[] }) {
   const body = JSON.stringify(payload);
   saveQueue = saveQueue.catch(() => undefined).then(async () => {
     const response = await fetch(apiUrl("/api/state"), {
@@ -71,6 +81,16 @@ function saveWorkspace(payload: { demos: Demo[]; projects: Project[]; tags: TagD
     if (!response.ok) throw new Error("Could not save to the local database");
   });
   return saveQueue;
+}
+
+async function apiRequest<T>(path: string, options: RequestInit = {}) {
+  const response = await fetch(apiUrl(path), {
+    ...options,
+    headers: { "content-type": "application/json", ...(options.headers ?? {}) },
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.error || "The local server could not complete that request");
+  return body as T;
 }
 
 async function putStoredFile(type: "audio" | "media", id: number, file: Blob, fileName: string) {
@@ -286,6 +306,9 @@ export default function Home() {
   const [tags, setTags] = useState<TagDefinition[]>([]);
   const [media, setMedia] = useState<ProjectMedia[]>([]);
   const [listens, setListens] = useState<ListenEvent[]>([]);
+  const [account, setAccount] = useState<Account>();
+  const [friends, setFriends] = useState<Friend[]>([]);
+  const [shares, setShares] = useState<DemoShare[]>([]);
   const [mediaUrls, setMediaUrls] = useState<Record<number, string>>({});
   const [orders, setOrders] = useState<Record<string, number[]>>({});
   const [view, setView] = useState<View>("library");
@@ -299,6 +322,9 @@ export default function Home() {
   const [showBulkDetect, setShowBulkDetect] = useState(false);
   const [detectProgress, setDetectProgress] = useState("");
   const [showStorage, setShowStorage] = useState(false);
+  const [showAccount, setShowAccount] = useState(false);
+  const [pairingCode, setPairingCode] = useState("");
+  const [meshProgress, setMeshProgress] = useState("");
   const [storageInfo, setStorageInfo] = useState<StorageInfo>({ usage: 0, quota: 0, persisted: false });
   const [storageProgress, setStorageProgress] = useState("");
   const [rapidMode, setRapidMode] = useState(false);
@@ -345,12 +371,13 @@ export default function Home() {
             tags: Array.isArray(legacy.tags) ? legacy.tags : [],
             media: Array.isArray(legacy.media) ? legacy.media : [],
             listens: Array.isArray(legacy.listens) ? legacy.listens : [],
+            shares: Array.isArray(legacy.shares) ? legacy.shares : [],
             orders: legacy.orders && typeof legacy.orders === "object" ? legacy.orders : {},
           };
           legacyData.tags = mergeTags(legacyData.tags, legacyData.demos.flatMap((demo) => demo.tags));
           if (serverData.empty && (legacyData.demos.length || legacyData.projects.length || legacyData.media.length)) {
             await saveWorkspace(legacyData);
-            data = { ...legacyData, empty: false };
+            data = await loadWorkspace();
           }
           let migrationFailures = 0;
           if (!data.empty) {
@@ -380,6 +407,9 @@ export default function Home() {
         setTags(mergeTags(data.tags ?? [], data.demos.flatMap((demo) => demo.tags)));
         setMedia(data.media);
         setListens(data.listens ?? []);
+        setAccount(data.account);
+        setFriends(data.friends ?? []);
+        setShares(data.shares ?? []);
         setOrders(data.orders);
         setSelectedId(data.demos[0]?.id ?? 1);
         setReady(true);
@@ -395,12 +425,12 @@ export default function Home() {
   useEffect(() => {
     if (!ready) return;
     const timeout = window.setTimeout(() => {
-      saveWorkspace({ demos, projects, tags, orders, media, listens }).catch(() => {
+      saveWorkspace({ demos, projects, tags, orders, media, listens, shares }).catch(() => {
         setImportNotice("Changes could not be saved to SQLite. Check that the local server is running.");
       });
     }, 250);
     return () => window.clearTimeout(timeout);
-  }, [demos, projects, tags, orders, media, listens, ready]);
+  }, [demos, projects, tags, orders, media, listens, shares, ready]);
 
   useEffect(() => {
     let currentUrl: string | undefined;
@@ -459,8 +489,13 @@ export default function Home() {
   const rapidDemo = demos.find((demo) => demo.id === rapidIds[rapidIndex]);
   const selectedStats = selected ? statsFor(selected.id) : statsFor(0);
   const selectedListens = selected ? listens.filter((listen) => listen.demoId === selected.id).slice(0, 5) : [];
+  const selectedOwnerScore = selected && account ? listens.filter((listen) => listen.demoId === selected.id && listen.authorId === account.id).reduce((score, listen) => score + (listen.verdict === "up" ? 1 : -1), 0) : 0;
+  const selectedFriendScore = selected && account ? listens.filter((listen) => listen.demoId === selected.id && listen.authorId !== account.id).reduce((score, listen) => score + (listen.verdict === "up" ? 1 : -1), 0) : 0;
   const rapidStats = rapidDemo ? statsFor(rapidDemo.id) : statsFor(0);
-  const selectedListenHistory = selectedListens.length > 0 ? <div className="listen-history"><span className="eyebrow">RECENT LISTENS</span>{selectedListens.map((listen) => <div className={`listen-event ${listen.verdict}`} key={listen.id}><b>{listen.verdict === "up" ? "↑" : "↓"}</b><span>{listen.note || "No note"}<small>{new Date(listen.listenedAt).toLocaleDateString("en-AU")}</small></span></div>)}</div> : null;
+  const selectedListenHistory = selectedListens.length > 0 ? <div className="listen-history"><span className="eyebrow">RECENT LISTENS</span>{selectedListens.map((listen) => <div className={`listen-event ${listen.verdict}`} key={listen.eventUuid || listen.id}><b>{listen.verdict === "up" ? "↑" : "↓"}</b><span><i>{listen.authorId === account?.id ? "You" : listen.authorName}</i>{listen.note || "No note"}<small>{new Date(listen.listenedAt).toLocaleDateString("en-AU")}</small></span></div>)}</div> : null;
+  const selectedSharing = selected && account ? selected.ownerId === account.id
+    ? <div className="detail-section sharing-section"><div className="detail-section-head"><span>SHARED WITH</span><button onClick={() => setShowAccount(true)}>manage</button></div><div className="share-friends">{friends.map((friend) => { const active = shares.some((share) => share.demoUuid === selected.uuid && share.friendId === friend.id); return <button key={friend.id} className={active ? "shared" : ""} onClick={() => toggleDemoShare(selected, friend.id)}><span>{active ? "✓" : "+"}</span>{friend.displayName}</button>; })}{friends.length === 0 && <small>No friends connected.</small>}</div></div>
+    : <div className="detail-section remote-source"><div className="detail-section-head"><span>SHARED BY</span></div><p>{friends.find((friend) => friend.id === selected.ownerId)?.displayName || "Friend"}</p></div> : null;
   const storagePercent = storageInfo.quota ? Math.min(100, storageInfo.usage / storageInfo.quota * 100) : 0;
 
   const visibleDemos = useMemo(() => {
@@ -538,6 +573,8 @@ export default function Home() {
     const demoTags = parseTags(String(form.get("tags") || ""));
     const next: Demo = {
       id,
+      uuid: crypto.randomUUID(),
+      ownerId: account?.id ?? "",
       title,
       bpm: Number(form.get("bpm") || analysis.bpm),
       key: String(form.get("key") || "C maj"),
@@ -627,7 +664,7 @@ export default function Home() {
       await putAudio(id, file);
       const title = file.name.replace(/\.[^.]+$/, "");
       imported.push({
-        id, title, bpm: analysis.bpm, key: "—", duration: analysis.duration,
+        id, uuid: crypto.randomUUID(), ownerId: account?.id ?? "", title, bpm: analysis.bpm, key: "—", duration: analysis.duration,
         status: "unheard", tags: batchTags, note: "", nextAction: "First proper listen",
         rating: 0, project: destination, updatedAt: Date.now(), audioName: file.name,
         checksum, fileSize: file.size, copyVerifiedAt: Date.now(),
@@ -737,10 +774,13 @@ export default function Home() {
   }
 
   function recordListen(verdict: "up" | "down") {
-    if (!rapidDemo) return;
+    if (!rapidDemo || !account) return;
     const listenedAt = Date.now();
     const id = listenedAt * 1000 + Math.floor(Math.random() * 1000);
-    setListens((current) => [{ id, demoId: rapidDemo.id, verdict, note: rapidNote.trim(), listenedAt }, ...current]);
+    setListens((current) => [{
+      id, eventUuid: crypto.randomUUID(), demoId: rapidDemo.id, demoUuid: rapidDemo.uuid,
+      authorId: account.id, authorName: account.displayName, verdict, note: rapidNote.trim(), listenedAt,
+    }, ...current]);
     advanceRapid();
   }
 
@@ -890,8 +930,88 @@ export default function Home() {
     if (tagFilter.toLocaleLowerCase() === name.toLocaleLowerCase()) setTagFilter("All tags");
   }
 
+  function applyPeerWorkspace(data: Awaited<ReturnType<typeof loadWorkspace>>) {
+    setDemos(data.demos);
+    setProjects(data.projects);
+    setTags(mergeTags(data.tags ?? [], data.demos.flatMap((demo) => demo.tags)));
+    setMedia(data.media);
+    setListens(data.listens ?? []);
+    setAccount(data.account);
+    setFriends(data.friends ?? []);
+    setShares(data.shares ?? []);
+    setOrders(data.orders);
+  }
+
+  async function saveAccount(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    try {
+      const updated = await apiRequest<Account>("/api/account", {
+        method: "PUT",
+        body: JSON.stringify({ displayName: form.get("displayName"), peerUrl: form.get("peerUrl") }),
+      });
+      setAccount(updated);
+      setMeshProgress("Account saved.");
+    } catch (error) {
+      setMeshProgress(error instanceof Error ? error.message : "Account could not be saved.");
+    }
+  }
+
+  async function createInvite() {
+    try {
+      const result = await apiRequest<{ code: string }>("/api/invites", { method: "POST", body: "{}" });
+      setPairingCode(result.code);
+      setMeshProgress("Invitation created. It expires in 24 hours and works once.");
+    } catch (error) {
+      setMeshProgress(error instanceof Error ? error.message : "Invitation could not be created.");
+    }
+  }
+
+  async function pairFriend(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const code = String(form.get("code") || "").trim();
+    if (!code) return;
+    setMeshProgress("Pairing…");
+    try {
+      await apiRequest("/api/friends/pair", { method: "POST", body: JSON.stringify({ code }) });
+      applyPeerWorkspace(await loadWorkspace());
+      event.currentTarget.reset();
+      setMeshProgress("Friend connected.");
+    } catch (error) {
+      setMeshProgress(error instanceof Error ? error.message : "Pairing failed.");
+    }
+  }
+
+  async function syncFriend(friend: Friend) {
+    setMeshProgress(`Syncing with ${friend.displayName}…`);
+    try {
+      await saveQueue;
+      const result = await apiRequest<{ audioCopied: number; workspace: Awaited<ReturnType<typeof loadWorkspace>> }>(`/api/friends/${encodeURIComponent(friend.id)}/sync`, { method: "POST", body: "{}" });
+      applyPeerWorkspace(result.workspace);
+      setMeshProgress(`Synced with ${friend.displayName}${result.audioCopied ? ` · ${result.audioCopied} audio ${result.audioCopied === 1 ? "file" : "files"} copied` : ""}.`);
+    } catch (error) {
+      setMeshProgress(error instanceof Error ? error.message : `Could not sync with ${friend.displayName}.`);
+      applyPeerWorkspace(await loadWorkspace());
+    }
+  }
+
+  async function disconnectFriend(friend: Friend) {
+    if (!window.confirm(`Disconnect ${friend.displayName}? Their existing ratings will remain attributed to them.`)) return;
+    await apiRequest(`/api/friends/${encodeURIComponent(friend.id)}`, { method: "DELETE" });
+    setFriends((current) => current.filter((item) => item.id !== friend.id));
+    setShares((current) => current.filter((share) => share.friendId !== friend.id));
+  }
+
+  function toggleDemoShare(demo: Demo, friendId: string) {
+    if (!account || demo.ownerId !== account.id) return;
+    setShares((current) => current.some((share) => share.demoUuid === demo.uuid && share.friendId === friendId)
+      ? current.filter((share) => share.demoUuid !== demo.uuid || share.friendId !== friendId)
+      : [...current, { demoUuid: demo.uuid, friendId, shareAudio: true }]);
+  }
+
   function exportBackup() {
-    const payload = JSON.stringify({ version: 5, exportedAt: new Date().toISOString(), demos, projects, tags, orders, media, listens }, null, 2);
+    const payload = JSON.stringify({ version: 6, exportedAt: new Date().toISOString(), demos, projects, tags, orders, media, listens, shares }, null, 2);
     const url = URL.createObjectURL(new Blob([payload], { type: "application/json" }));
     const anchor = document.createElement("a");
     anchor.href = url;
@@ -906,9 +1026,15 @@ export default function Home() {
     try {
       const data = JSON.parse(await file.text());
       if (!Array.isArray(data.demos) || !Array.isArray(data.projects)) throw new Error("Invalid backup");
-      const restoredTags = mergeTags(Array.isArray(data.tags) ? data.tags : [], data.demos.flatMap((demo: Demo) => demo.tags));
-      setDemos(data.demos); setProjects(data.projects); setTags(restoredTags); setOrders(data.orders ?? {}); setMedia(data.media ?? []); setListens(data.listens ?? []);
-      setSelectedId(data.demos[0]?.id ?? 1); setProject("All demos"); setView("library");
+      const restoredDemos = data.demos.map((demo: Demo) => ({ ...demo, uuid: demo.uuid || crypto.randomUUID(), ownerId: demo.ownerId || account?.id || "" }));
+      const demosById = new Map(restoredDemos.map((demo: Demo) => [demo.id, demo]));
+      const restoredListens = (Array.isArray(data.listens) ? data.listens : []).map((listen: ListenEvent) => ({
+        ...listen, eventUuid: listen.eventUuid || crypto.randomUUID(), demoUuid: listen.demoUuid || demosById.get(listen.demoId)?.uuid || "",
+        authorId: listen.authorId || account?.id || "", authorName: listen.authorName || account?.displayName || "Owner", signature: listen.authorId ? listen.signature : undefined,
+      }));
+      const restoredTags = mergeTags(Array.isArray(data.tags) ? data.tags : [], restoredDemos.flatMap((demo: Demo) => demo.tags));
+      setDemos(restoredDemos); setProjects(data.projects); setTags(restoredTags); setOrders(data.orders ?? {}); setMedia(data.media ?? []); setListens(restoredListens); setShares(data.shares ?? []);
+      setSelectedId(restoredDemos[0]?.id ?? 1); setProject("All demos"); setView("library");
     } catch { window.alert("That file is not a valid Demolition backup."); }
     event.target.value = "";
   }
@@ -928,6 +1054,7 @@ export default function Home() {
           <button onClick={() => importRef.current?.click()} className="nav-item"><span>⇧</span> Restore backup</button>
           <button onClick={() => { setDetectProgress(""); setShowBulkDetect(true); }} className="nav-item"><span>⌁</span> Detect BPM <b>{demos.filter((demo) => !demo.bpm).length}</b></button>
           <button onClick={startRapidListen} className="nav-item"><span>▶</span> Listen mode</button>
+          <button onClick={() => { setMeshProgress(""); setShowAccount(true); }} className="nav-item"><span>◎</span> Friends &amp; sync <b>{friends.length}</b></button>
           <button onClick={() => { setStorageProgress(""); refreshStorageInfo().catch(() => undefined); setShowStorage(true); }} className="nav-item"><span>◈</span> Storage health</button>
           <input ref={importRef} className="sr-only" type="file" accept="application/json" onChange={importBackup} />
         </nav>
@@ -937,11 +1064,11 @@ export default function Home() {
           <button onClick={() => selectProject("Unsorted")} className={`project-item ${view === "project" && project === "Unsorted" ? "selected" : ""}`}><span className="project-dot muted" />Unsorted<span className="count">{demos.filter((demo) => demo.project === "Unsorted").length}</span></button>
         </div>
         <div className="local-badge"><span>●</span><div><strong>Local SQLite library</strong><small>Original files remain untouched</small></div></div>
-        <div className="sidebar-bottom"><div className="mini-avatar">JD</div><div><strong>Josh&apos;s workspace</strong><span>Personal studio</span></div></div>
+        <div className="sidebar-bottom"><div className="mini-avatar">{account?.displayName.slice(0, 2).toUpperCase() || "—"}</div><div><strong>{account?.displayName || "Local owner"}</strong><span>{friends.length} connected {friends.length === 1 ? "friend" : "friends"}</span></div></div>
       </aside>
 
       <section className="content">
-        <header className="topbar"><div className="breadcrumb"><span>Workspace</span><i>/</i><strong>{currentTitle}</strong></div><div className="top-actions"><label className="search"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search demos" /></label><button className="avatar" aria-label="Profile">JD</button></div></header>
+        <header className="topbar"><div className="breadcrumb"><span>Workspace</span><i>/</i><strong>{currentTitle}</strong></div><div className="top-actions"><label className="search"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search demos" /></label><button className="avatar" aria-label="Open account" onClick={() => setShowAccount(true)}>{account?.displayName.slice(0, 2).toUpperCase() || "—"}</button></div></header>
         <div className="page-content">
           <div className="heading-row"><div><div className="eyebrow">{new Intl.DateTimeFormat("en-AU", { weekday: "long", day: "numeric", month: "long", year: "numeric" }).format(new Date()).toUpperCase()}</div><h1>{view === "revisit" ? "Revisit queue" : view === "project" ? project : "Demo library"}</h1><p className="lede">{view === "revisit" ? `${revisitDemos.length} demos are queued, oldest first.` : view === "project" ? projectTab === "moodboard" ? "Collect visual, video, and audio references for this project." : "Move demos between the candidate pool and ordered tracklist." : <>Your library contains <strong>{demos.length} demos</strong>, with <strong>{revisitDemos.length}</strong> queued for review.</>}</p></div><div className="heading-actions">{view === "revisit" && <button className="secondary-button" onClick={pickForMe}>Pick one for me</button>}{view === "project" && project !== "Unsorted" && <button className="settings-button" onClick={() => setShowProjectSettings(true)} aria-label={`Manage ${project}`}>⚙ Project settings</button>}{view === "project" && project !== "Unsorted" && projectTab === "moodboard" && <button className="secondary-button" onClick={() => setShowMedia(true)}>＋ Add reference</button>}<button className="secondary-button" onClick={() => setShowAdd(true)}>＋ One demo</button><button className="primary-button" onClick={() => { setBulkProgress(""); setShowBulk(true); }}><span>＋</span> Bulk import</button></div></div>
           {importNotice && <div className="import-notice" role="status"><span>✓</span><p>{importNotice}</p><button onClick={() => setImportNotice("")} aria-label="Dismiss import summary">×</button></div>}
@@ -970,13 +1097,15 @@ export default function Home() {
 
             {view === "project" && project !== "Unsorted" && <aside className="candidate-panel" onDragOver={(event) => event.preventDefault()} onDrop={dropInCandidatePool}><div className="candidate-head"><div><span className="eyebrow">CANDIDATE POOL</span><h3>{projectCandidates.length} candidate {projectCandidates.length === 1 ? "track" : "tracks"}</h3></div><span>Drag into tracklist →</span></div><div className="candidate-list">{projectCandidates.map((demo) => <div key={demo.id} className="candidate-row" draggable onDragStart={() => setDraggedId(demo.id)}><button onClick={() => setSelectedId(demo.id)}><span className={`cover cover-${demo.id % 4}`}><i /></span><span><strong>{demo.title}</strong><small>{demo.bpm ? `${demo.bpm} BPM` : "BPM unknown"} · {statusLabels[demo.status]}</small></span></button><button className="promote-button" onClick={() => setOrders((current) => ({ ...current, [project]: [...(current[project] ?? []).filter((id) => id !== demo.id), demo.id] }))} aria-label={`Add ${demo.title} to tracklist`}>＋</button></div>)}{projectCandidates.length === 0 && <div className="candidate-empty"><span>✓</span><strong>No candidates</strong><small>Import demos here or drag a track out of the tracklist.</small></div>}</div><div className="candidate-drop">← Drop here to return a track to the pool</div></aside>}
 
-            {selected && (view !== "project" || project === "Unsorted") && <aside className="detail-panel"><div className="detail-top"><span className="eyebrow">SELECTED DEMO</span><button className="more-button" onClick={openEdit}>Edit</button></div><div className={`focus-cover cover-${selected.id % 4}`}><span>✳</span></div><h3>{selected.title}</h3><div className="focus-meta">{selected.bpm ? `${selected.bpm} BPM` : "BPM —"} <i>·</i> {selected.key} <i>·</i> {selected.duration}</div><button className="detect-bpm" disabled={detectingId === selected.id} onClick={detectSelectedBpm}>{detectingId === selected.id ? "◌ Analyzing tempo…" : "⌁ Detect BPM again"}</button><div className="listen-summary" aria-label={"Listen score " + selectedStats.score}><span><b>{selectedStats.up}</b> ↑</span><span><b>{selectedStats.down}</b> ↓</span><strong>{selectedStats.score > 0 ? "+" + selectedStats.score : selectedStats.score}</strong><small>{selectedStats.count} {selectedStats.count === 1 ? "listen" : "listens"}</small></div>{selectedListenHistory}{audioUrl ? <><audio className="audio-player" src={audioUrl} controls preload="metadata"><track kind="captions" src="data:text/vtt,WEBVTT" srcLang="en" label="Instrumental audio" /></audio><button className="remove-copy" onClick={removeSelectedAudioCopy}>Remove local copy</button></> : <button className="audio-empty" onClick={() => attachRef.current?.click()}><span>＋</span> Attach an audio bounce</button>}<input ref={attachRef} className="sr-only" type="file" accept="audio/*,.wav,.aif,.aiff,.mp3,.m4a,.flac" onChange={attachAudio} /><div className="detail-section"><div className="detail-section-head"><span>NEXT ACTION</span><button onClick={openEdit}>edit</button></div><p className="next-action">→ {selected.nextAction || "No next action set"}</p></div><div className="detail-section"><div className="detail-section-head"><span>NOTES</span><button onClick={openEdit}>edit</button></div><p>{selected.note || "No notes yet."}</p></div><div className="detail-section"><div className="detail-section-head"><span>PROJECT</span><button onClick={openEdit}>change</button></div><div className="assigned-project"><span className="project-dot coral" />{selected.project}<span>↗</span></div></div><button className="open-demo" onClick={openEdit}>Edit demo <span>↗</span></button></aside>}
+            {selected && (view !== "project" || project === "Unsorted") && <aside className="detail-panel"><div className="detail-top"><span className="eyebrow">SELECTED DEMO</span><button className="more-button" onClick={openEdit}>Edit</button></div><div className={`focus-cover cover-${selected.id % 4}`}><span>✳</span></div><h3>{selected.title}</h3><div className="focus-meta">{selected.bpm ? `${selected.bpm} BPM` : "BPM —"} <i>·</i> {selected.key} <i>·</i> {selected.duration}</div><button className="detect-bpm" disabled={detectingId === selected.id} onClick={detectSelectedBpm}>{detectingId === selected.id ? "◌ Analyzing tempo…" : "⌁ Detect BPM again"}</button><div className="listen-summary" aria-label={"Listen score " + selectedStats.score}><span><b>{selectedStats.up}</b> ↑</span><span><b>{selectedStats.down}</b> ↓</span><strong>{selectedStats.score > 0 ? "+" + selectedStats.score : selectedStats.score}</strong><small>{selectedStats.count} {selectedStats.count === 1 ? "listen" : "listens"} · You {selectedOwnerScore > 0 ? "+" + selectedOwnerScore : selectedOwnerScore} · Friends {selectedFriendScore > 0 ? "+" + selectedFriendScore : selectedFriendScore}</small></div>{selectedListenHistory}{audioUrl ? <><audio className="audio-player" src={audioUrl} controls preload="metadata"><track kind="captions" src="data:text/vtt,WEBVTT" srcLang="en" label="Instrumental audio" /></audio><button className="remove-copy" onClick={removeSelectedAudioCopy}>Remove local copy</button></> : <button className="audio-empty" onClick={() => attachRef.current?.click()}><span>＋</span> Attach an audio bounce</button>}<input ref={attachRef} className="sr-only" type="file" accept="audio/*,.wav,.aif,.aiff,.mp3,.m4a,.flac" onChange={attachAudio} />{selectedSharing}<div className="detail-section"><div className="detail-section-head"><span>NEXT ACTION</span><button onClick={openEdit}>edit</button></div><p className="next-action">→ {selected.nextAction || "No next action set"}</p></div><div className="detail-section"><div className="detail-section-head"><span>NOTES</span><button onClick={openEdit}>edit</button></div><p>{selected.note || "No notes yet."}</p></div><div className="detail-section"><div className="detail-section-head"><span>PROJECT</span><button onClick={openEdit}>change</button></div><div className="assigned-project"><span className="project-dot coral" />{selected.project}<span>↗</span></div></div><button className="open-demo" onClick={openEdit}>Edit demo <span>↗</span></button></aside>}
           </div></>}
           <div className="bottom-note"><span className="spark">✳</span><span><strong>{revisitDemos.length} demos in the review queue.</strong> Sorted by oldest update.</span><button onClick={() => { setView("revisit"); setProject("All demos"); }}>Open revisit queue →</button></div>
         </div>
       </section>
 
       {rapidMode && rapidDemo && <div className="rapid-backdrop"><section className="rapid-session" aria-label="Listen mode"><header><div><span className="eyebrow">LISTEN MODE</span><strong>{rapidIndex + 1} / {rapidIds.length}</strong></div><button onClick={() => setRapidMode(false)} aria-label="End listen mode">×</button></header><div className="rapid-body"><div className={`rapid-art cover-${rapidDemo.id % 4}`}><span>✳</span></div><div className="rapid-main"><div className="rapid-title"><div><h2>{rapidDemo.title}</h2><p>{rapidDemo.bpm ? `${rapidDemo.bpm} BPM` : "BPM unknown"} · {rapidDemo.key} · {rapidDemo.duration}</p></div><select aria-label="Assign project" value={rapidDemo.project} onChange={(event) => changeRapidProject(event.target.value)}>{projectNames.map((name) => <option key={name}>{name}</option>)}</select></div>{audioUrl ? <audio ref={rapidAudioRef} className="rapid-player" src={audioUrl} controls preload="metadata"><track kind="captions" src="data:text/vtt,WEBVTT" srcLang="en" label="Demo audio" /></audio> : <div className="rapid-no-audio">No local audio copy attached</div>}<div className="rapid-vote-summary"><span>{rapidStats.up} up</span><span>{rapidStats.down} down</span><strong>Score {rapidStats.score > 0 ? `+${rapidStats.score}` : rapidStats.score}</strong></div><label className="rapid-note">Note for this listen<textarea value={rapidNote} onChange={(event) => setRapidNote(event.target.value)} rows={3} placeholder="Optional note saved with your vote" /></label></div></div><footer><button className="rapid-skip" onClick={advanceRapid}>Skip</button><div className="rapid-vote-buttons"><button className="thumb-down" onClick={() => recordListen("down")}><span>↓</span> Thumbs down</button><button className="thumb-up" onClick={() => recordListen("up")}><span>↑</span> Thumbs up</button></div></footer></section></div>}
+
+      {showAccount && account && <div className="modal-backdrop"><section className="modal mesh-modal" aria-label="Friends and sync"><button type="button" className="modal-close" onClick={() => setShowAccount(false)}>×</button><div className="eyebrow">LOCAL IDENTITY</div><h2>Friends &amp; sync</h2><form className="account-form" onSubmit={saveAccount}><div className="modal-fields"><label>Display name<input name="displayName" defaultValue={account.displayName} required /></label><label>Mesh VPN URL<input name="peerUrl" type="url" defaultValue={account.peerUrl} placeholder="http://100.64.0.10:3001" required /></label></div><span className="field-hint">Use this machine&apos;s stable VPN address. Start the server with DEMOLITION_API_HOST set to 0.0.0.0 so friends can reach it.</span><button className="secondary-button" type="submit">Save identity</button></form><div className="mesh-grid"><section><div className="detail-section-head"><span>INVITE A FRIEND</span></div><p>Create a single-use code and send it through a channel you trust.</p><button className="secondary-button" onClick={createInvite}>Create invitation</button>{pairingCode && <div className="invite-code"><textarea readOnly value={pairingCode} rows={4} aria-label="Pairing invitation code" /><button onClick={() => navigator.clipboard.writeText(pairingCode).then(() => setMeshProgress("Invitation copied."))}>Copy</button></div>}</section><section><div className="detail-section-head"><span>JOIN A FRIEND</span></div><form onSubmit={pairFriend}><textarea name="code" rows={4} placeholder="Paste their invitation code" aria-label="Friend invitation code" required /><button className="secondary-button" type="submit">Pair instance</button></form></section></div><div className="friend-list"><div className="detail-section-head"><span>CONNECTED FRIENDS</span><small>{friends.length}</small></div>{friends.map((friend) => <article key={friend.id}><span className={`peer-status ${friend.status}`} /><div><strong>{friend.displayName}</strong><small>{friend.peerUrl}</small><small>{friend.lastSyncedAt ? `Last synced ${relativeDate(friend.lastSyncedAt)}` : "Not synced yet"}</small></div><button onClick={() => syncFriend(friend)}>Sync now</button><button className="disconnect-peer" onClick={() => disconnectFriend(friend)} aria-label={`Disconnect ${friend.displayName}`}>×</button></article>)}{friends.length === 0 && <div className="friend-empty">No friends connected.</div>}</div>{meshProgress && <div className="mesh-progress" role="status">{meshProgress}</div>}<div className="mesh-security">Peer traffic stays on the VPN. Demolition also requires a separate pairing token and verifies signed rating events.</div></section></div>}
 
       {showStorage && <div className="modal-backdrop"><section className="modal storage-modal" aria-label="Storage health"><button type="button" className="modal-close" onClick={() => setShowStorage(false)}>×</button><div className="eyebrow">STORAGE HEALTH</div><h2>Storage status</h2><p>Metadata is stored in SQLite. Audio and moodboard files are copied into Demolition’s local data folder.</p><div className="storage-meter"><div><strong>{formatBytes(storageInfo.usage)}</strong><span>used · {formatBytes(Math.max(0, storageInfo.quota - storageInfo.usage))} free</span></div><b>{Math.round(storagePercent)}%</b><div className="storage-bar"><span style={{ width: `${storagePercent}%` }} /></div></div><div className="health-grid"><div className="health-good"><span>✓</span><strong>Local persistent storage</strong><small>The database and managed copies remain on this machine.</small><button onClick={requestPersistentStorage}>Refresh status</button></div><div className="health-good"><span>♢</span><strong>{demos.filter((demo) => demo.checksum).length} checksummed copies</strong><small>SHA-256 fingerprints detect duplicates and unexpected byte changes.</small><button onClick={verifyAudioCopies}>Verify all copies</button></div></div>{storageProgress && <div className="storage-result" role="status">{storageProgress.startsWith("Verifying") ? <i /> : <span>✓</span>}<p>{storageProgress}</p></div>}<div className="backup-clarity"><strong>Metadata backup ≠ audio backup</strong><p>Export Backup preserves your catalogue, projects, notes, and checksums. Your original music files remain the authoritative audio backup.</p></div><button className="primary-button modal-submit" onClick={() => setShowStorage(false)}>Done</button></section></div>}
 
