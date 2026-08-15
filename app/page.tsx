@@ -331,6 +331,8 @@ export default function Home() {
   const [rapidIndex, setRapidIndex] = useState(0);
   const [rapidIds, setRapidIds] = useState<number[]>([]);
   const [rapidNote, setRapidNote] = useState("");
+  const [rapidVote, setRapidVote] = useState<"up" | "down">();
+  const [rapidVoteEventUuid, setRapidVoteEventUuid] = useState<string>();
   const [importNotice, setImportNotice] = useState("");
   const [detectingId, setDetectingId] = useState<number>();
   const [showEdit, setShowEdit] = useState(false);
@@ -348,6 +350,7 @@ export default function Home() {
   const importRef = useRef<HTMLInputElement>(null);
   const attachRef = useRef<HTMLInputElement>(null);
   const rapidAudioRef = useRef<HTMLAudioElement>(null);
+  const rapidActionsRef = useRef({ previous: () => undefined, next: () => undefined, down: () => undefined, up: () => undefined });
 
   async function refreshStorageInfo() {
     const response = await fetch(apiUrl("/api/storage"));
@@ -449,6 +452,22 @@ export default function Home() {
   }, [audioUrl, rapidMode]);
 
   useEffect(() => {
+    if (!rapidMode) return;
+    function handleKeyDown(event: KeyboardEvent) {
+      const target = event.target as HTMLElement | null;
+      if (target?.isContentEditable || target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.tagName === "SELECT" || event.repeat) return;
+      const key = event.key.toLowerCase();
+      const action = key === "arrowleft" || key === "h" ? rapidActionsRef.current.previous
+        : key === "arrowright" || key === "l" ? rapidActionsRef.current.next
+        : key === "arrowdown" || key === "j" ? rapidActionsRef.current.down
+        : key === "arrowup" || key === "k" ? rapidActionsRef.current.up : undefined;
+      if (action) { event.preventDefault(); action(); }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [rapidMode]);
+
+  useEffect(() => {
     if (view !== "project" || projectTab !== "moodboard") return;
     let active = true;
     const localItems = media.filter((item) => item.project === project && item.source === "file");
@@ -492,6 +511,8 @@ export default function Home() {
   const selectedOwnerScore = selected && account ? listens.filter((listen) => listen.demoId === selected.id && listen.authorId === account.id).reduce((score, listen) => score + (listen.verdict === "up" ? 1 : -1), 0) : 0;
   const selectedFriendScore = selected && account ? listens.filter((listen) => listen.demoId === selected.id && listen.authorId !== account.id).reduce((score, listen) => score + (listen.verdict === "up" ? 1 : -1), 0) : 0;
   const rapidStats = rapidDemo ? statsFor(rapidDemo.id) : statsFor(0);
+  const rapidDownSelected = rapidVote === "down";
+  const rapidUpSelected = rapidVote === "up";
   const selectedListenHistory = selectedListens.length > 0 ? <div className="listen-history"><span className="eyebrow">RECENT LISTENS</span>{selectedListens.map((listen) => <div className={`listen-event ${listen.verdict}`} key={listen.eventUuid || listen.id}><b>{listen.verdict === "up" ? "↑" : "↓"}</b><span><i>{listen.authorId === account?.id ? "You" : listen.authorName}</i>{listen.note || "No note"}<small>{new Date(listen.listenedAt).toLocaleDateString("en-AU")}</small></span></div>)}</div> : null;
   const selectedSharing = selected && account ? selected.ownerId === account.id
     ? <div className="detail-section sharing-section"><div className="detail-section-head"><span>SHARED WITH</span><button onClick={() => setShowAccount(true)}>manage</button></div><div className="share-friends">{friends.map((friend) => { const active = shares.some((share) => share.demoUuid === selected.uuid && share.friendId === friend.id); return <button key={friend.id} className={active ? "shared" : ""} onClick={() => toggleDemoShare(selected, friend.id)}><span>{active ? "✓" : "+"}</span>{friend.displayName}</button>; })}{friends.length === 0 && <small>No friends connected.</small>}</div></div>
@@ -756,8 +777,24 @@ export default function Home() {
     setRapidIds(ids);
     setRapidIndex(0);
     setRapidNote("");
+    setRapidVote(undefined);
+    setRapidVoteEventUuid(undefined);
     setSelectedId(ids[0]);
     setRapidMode(true);
+  }
+
+  function resetRapidResponse() {
+    setRapidNote("");
+    setRapidVote(undefined);
+    setRapidVoteEventUuid(undefined);
+  }
+
+  function previousRapid() {
+    if (rapidIndex <= 0) return;
+    const previousIndex = rapidIndex - 1;
+    resetRapidResponse();
+    setRapidIndex(previousIndex);
+    setSelectedId(rapidIds[previousIndex]);
   }
 
   function advanceRapid() {
@@ -768,21 +805,42 @@ export default function Home() {
       setImportNotice("Listening round complete.");
       return;
     }
-    setRapidNote("");
+    resetRapidResponse();
     setRapidIndex(nextIndex);
     setSelectedId(rapidIds[nextIndex]);
   }
 
   function recordListen(verdict: "up" | "down") {
     if (!rapidDemo || !account) return;
+    if (rapidVoteEventUuid) {
+      setListens((current) => current.map((listen) => listen.eventUuid === rapidVoteEventUuid ? { ...listen, verdict, note: rapidNote.trim(), signature: undefined } : listen));
+      setRapidVote(verdict);
+      return;
+    }
     const listenedAt = Date.now();
     const id = listenedAt * 1000 + Math.floor(Math.random() * 1000);
+    const eventUuid = crypto.randomUUID();
     setListens((current) => [{
-      id, eventUuid: crypto.randomUUID(), demoId: rapidDemo.id, demoUuid: rapidDemo.uuid,
+      id, eventUuid, demoId: rapidDemo.id, demoUuid: rapidDemo.uuid,
       authorId: account.id, authorName: account.displayName, verdict, note: rapidNote.trim(), listenedAt,
     }, ...current]);
-    advanceRapid();
+    setRapidVote(verdict);
+    setRapidVoteEventUuid(eventUuid);
   }
+
+  function updateRapidNote(value: string) {
+    setRapidNote(value);
+    if (rapidVoteEventUuid) setListens((current) => current.map((listen) => listen.eventUuid === rapidVoteEventUuid ? { ...listen, note: value.trim(), signature: undefined } : listen));
+  }
+
+  useEffect(() => {
+    rapidActionsRef.current = {
+      previous: previousRapid,
+      next: advanceRapid,
+      down: () => recordListen("down"),
+      up: () => recordListen("up"),
+    };
+  });
 
   function changeRapidProject(nextProject: string) {
     if (!rapidDemo) return;
@@ -1103,7 +1161,7 @@ export default function Home() {
         </div>
       </section>
 
-      {rapidMode && rapidDemo && <div className="rapid-backdrop"><section className="rapid-session" aria-label="Listen mode"><header><div><span className="eyebrow">LISTEN MODE</span><strong>{rapidIndex + 1} / {rapidIds.length}</strong></div><button onClick={() => setRapidMode(false)} aria-label="End listen mode">×</button></header><div className="rapid-body"><div className={`rapid-art cover-${rapidDemo.id % 4}`}><span>✳</span></div><div className="rapid-main"><div className="rapid-title"><div><h2>{rapidDemo.title}</h2><p>{rapidDemo.bpm ? `${rapidDemo.bpm} BPM` : "BPM unknown"} · {rapidDemo.key} · {rapidDemo.duration}</p></div><select aria-label="Assign project" value={rapidDemo.project} onChange={(event) => changeRapidProject(event.target.value)}>{projectNames.map((name) => <option key={name}>{name}</option>)}</select></div>{audioUrl ? <audio ref={rapidAudioRef} className="rapid-player" src={audioUrl} controls preload="metadata"><track kind="captions" src="data:text/vtt,WEBVTT" srcLang="en" label="Demo audio" /></audio> : <div className="rapid-no-audio">No local audio copy attached</div>}<div className="rapid-vote-summary"><span>{rapidStats.up} up</span><span>{rapidStats.down} down</span><strong>Score {rapidStats.score > 0 ? `+${rapidStats.score}` : rapidStats.score}</strong></div><label className="rapid-note">Note for this listen<textarea value={rapidNote} onChange={(event) => setRapidNote(event.target.value)} rows={3} placeholder="Optional note saved with your vote" /></label></div></div><footer><button className="rapid-skip" onClick={advanceRapid}>Skip</button><div className="rapid-vote-buttons"><button className="thumb-down" onClick={() => recordListen("down")}><span>↓</span> Thumbs down</button><button className="thumb-up" onClick={() => recordListen("up")}><span>↑</span> Thumbs up</button></div></footer></section></div>}
+      {rapidMode && rapidDemo && <div className="rapid-backdrop"><section className="rapid-session" aria-label="Listen mode"><header><div><span className="eyebrow">LISTEN MODE</span><strong>{rapidIndex + 1} / {rapidIds.length}</strong></div><button onClick={() => setRapidMode(false)} aria-label="End listen mode">×</button></header><div className="rapid-body"><div className={`rapid-art cover-${rapidDemo.id % 4}`}><span>✳</span></div><div className="rapid-main"><div className="rapid-title"><div><h2>{rapidDemo.title}</h2><p>{rapidDemo.bpm ? `${rapidDemo.bpm} BPM` : "BPM unknown"} · {rapidDemo.key} · {rapidDemo.duration}</p></div><select aria-label="Assign project" value={rapidDemo.project} onChange={(event) => changeRapidProject(event.target.value)}>{projectNames.map((name) => <option key={name}>{name}</option>)}</select></div>{audioUrl ? <audio ref={rapidAudioRef} className="rapid-player" src={audioUrl} controls onEnded={advanceRapid} preload="metadata"><track kind="captions" src="data:text/vtt,WEBVTT" srcLang="en" label="Demo audio" /></audio> : <div className="rapid-no-audio">No local audio copy attached</div>}<div className="rapid-vote-summary"><span>{rapidStats.up} up</span><span>{rapidStats.down} down</span><strong>Score {rapidStats.score > 0 ? `+${rapidStats.score}` : rapidStats.score}</strong></div><label className="rapid-note">Note for this listen<textarea value={rapidNote} onChange={(event) => updateRapidNote(event.target.value)} rows={3} placeholder="Optional note saved with your vote" /></label></div></div><footer><div className="rapid-controls"><button className="rapid-previous" disabled={!rapidIndex} onClick={previousRapid}><span>←</span> Previous <kbd>H</kbd></button><button className="thumb-down" aria-pressed={rapidDownSelected} onClick={() => recordListen("down")}><span>↓</span> Thumbs down <kbd>J</kbd></button><button className="thumb-up" aria-pressed={rapidUpSelected} onClick={() => recordListen("up")}><span>↑</span> Thumbs up <kbd>K</kbd></button><button className="rapid-next-track" onClick={advanceRapid}>Next <span>→</span> <kbd>L</kbd></button></div></footer></section></div>}
 
       {showAccount && account && <div className="modal-backdrop"><section className="modal mesh-modal" aria-label="Friends and sync"><button type="button" className="modal-close" onClick={() => setShowAccount(false)}>×</button><div className="eyebrow">LOCAL IDENTITY</div><h2>Friends &amp; sync</h2><form className="account-form" onSubmit={saveAccount}><div className="modal-fields"><label>Display name<input name="displayName" defaultValue={account.displayName} required /></label><label>Mesh VPN URL<input name="peerUrl" type="url" defaultValue={account.peerUrl} placeholder="http://100.64.0.10:3001" required /></label></div><span className="field-hint">Use this machine&apos;s stable VPN address. Start the server with DEMOLITION_API_HOST set to 0.0.0.0 so friends can reach it.</span><button className="secondary-button" type="submit">Save identity</button></form><div className="mesh-grid"><section><div className="detail-section-head"><span>INVITE A FRIEND</span></div><p>Create a single-use code and send it through a channel you trust.</p><button className="secondary-button" onClick={createInvite}>Create invitation</button>{pairingCode && <div className="invite-code"><textarea readOnly value={pairingCode} rows={4} aria-label="Pairing invitation code" /><button onClick={() => navigator.clipboard.writeText(pairingCode).then(() => setMeshProgress("Invitation copied."))}>Copy</button></div>}</section><section><div className="detail-section-head"><span>JOIN A FRIEND</span></div><form onSubmit={pairFriend}><textarea name="code" rows={4} placeholder="Paste their invitation code" aria-label="Friend invitation code" required /><button className="secondary-button" type="submit">Pair instance</button></form></section></div><div className="friend-list"><div className="detail-section-head"><span>CONNECTED FRIENDS</span><small>{friends.length}</small></div>{friends.map((friend) => <article key={friend.id}><span className={`peer-status ${friend.status}`} /><div><strong>{friend.displayName}</strong><small>{friend.peerUrl}</small><small>{friend.lastSyncedAt ? `Last synced ${relativeDate(friend.lastSyncedAt)}` : "Not synced yet"}</small></div><button onClick={() => syncFriend(friend)}>Sync now</button><button className="disconnect-peer" onClick={() => disconnectFriend(friend)} aria-label={`Disconnect ${friend.displayName}`}>×</button></article>)}{friends.length === 0 && <div className="friend-empty">No friends connected.</div>}</div>{meshProgress && <div className="mesh-progress" role="status">{meshProgress}</div>}<div className="mesh-security">Peer traffic stays on the VPN. Demolition also requires a separate pairing token and verifies signed rating events.</div></section></div>}
 

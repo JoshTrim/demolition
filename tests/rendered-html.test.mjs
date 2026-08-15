@@ -98,5 +98,10 @@ test("keeps local data out of version control", async () => {
   assert.match(ignore, /^\/data\/$/m);
   assert.match(packageJson, /scripts\/run-local\.mjs/);
   assert.match(page, /\/api\/state/);
+  assert.match(page, /key === "arrowleft" \|\| key === "h"/);
+  assert.match(page, /key === "arrowright" \|\| key === "l"/);
+  assert.match(page, /key === "arrowdown" \|\| key === "j"/);
+  assert.match(page, /key === "arrowup" \|\| key === "k"/);
+  assert.match(page, /onEnded=\{advanceRapid\}/);
   assert.doesNotMatch(page, /localStorage\.setItem\(STORAGE_KEY/);
 });
