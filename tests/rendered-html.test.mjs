@@ -107,6 +107,9 @@ test("keeps local data out of version control", async () => {
   assert.match(page, /onEnded=\{advanceRapid\}/);
   assert.match(page, /onPointerDown=\{beginTimedNoteRange\}/);
   assert.match(page, /waveformPeaks/);
+  assert.match(page, /libraryAudioChecksums/);
+  assert.match(page, /Indexing existing demo/);
+  assert.match(page, /uniqueFiles/);
   assert.match(page, /annotation-waveform/);
   assert.match(page, /rapidActiveNoteUuids/);
   assert.match(page, /editTimedNote\(note\)/);

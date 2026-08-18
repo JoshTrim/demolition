@@ -402,6 +402,30 @@ export default function Home() {
     setStorageInfo(await response.json());
   }
 
+  async function libraryAudioChecksums(excludeDemoId?: number, onProgress?: (message: string) => void) {
+    const checksums = new Set<string>();
+    const updates = new Map<number, { checksum: string; fileSize: number; copyVerifiedAt: number }>();
+    for (const demo of demos) {
+      if (demo.id === excludeDemoId) continue;
+      if (demo.checksum) checksums.add(demo.checksum);
+    }
+    const unindexed = demos.filter((demo) => demo.id !== excludeDemoId && demo.audioName && !demo.checksum);
+    for (let index = 0; index < unindexed.length; index++) {
+      const demo = unindexed[index];
+      onProgress?.(`Indexing existing demo ${index + 1} of ${unindexed.length}: ${demo.title}`);
+      const blob = await getAudio(demo.id).catch(() => undefined);
+      if (!blob) continue;
+      const checksum = await checksumBlob(blob);
+      checksums.add(checksum);
+      updates.set(demo.id, { checksum, fileSize: blob.size, copyVerifiedAt: Date.now() });
+    }
+    if (updates.size) setDemos((current) => current.map((demo) => {
+      const update = updates.get(demo.id);
+      return update ? { ...demo, ...update } : demo;
+    }));
+    return checksums;
+  }
+
   useEffect(() => {
     let active = true;
     async function initialize() {
@@ -706,7 +730,7 @@ export default function Home() {
     const id = Date.now();
     const hasFile = file instanceof File && file.size > 0;
     const checksum = hasFile ? await checksumBlob(file) : undefined;
-    if (checksum && demos.some((demo) => demo.checksum === checksum)) { window.alert("This audio file is already in Demolition."); return; }
+    if (checksum && (await libraryAudioChecksums()).has(checksum)) { window.alert("This audio file is already in Demolition."); return; }
     if (hasFile && storageInfo.quota && file.size > storageInfo.quota - storageInfo.usage) { window.alert("There is not enough disk space available for this copy."); return; }
     const analysis = hasFile ? await analyzeAudio(file) : { duration: "00:00", bpm: 0 };
     const title = String(form.get("title") || (hasFile ? file.name.replace(/\.[^.]+$/, "") : "Untitled demo"));
@@ -770,7 +794,7 @@ export default function Home() {
     const file = event.target.files?.[0];
     if (!file) return;
     const checksum = await checksumBlob(file);
-    if (demos.some((demo) => demo.id !== selected.id && demo.checksum === checksum)) { window.alert("This audio is already attached to another demo."); return; }
+    if ((await libraryAudioChecksums(selected.id)).has(checksum)) { window.alert("This audio is already attached to another demo."); return; }
     await putAudio(selected.id, file);
     const analysis = await analyzeAudio(file);
     setDemos((current) => current.map((demo) => demo.id === selected.id ? { ...demo, audioName: file.name, duration: analysis.duration, bpm: analysis.bpm || demo.bpm, checksum, fileSize: file.size, copyVerifiedAt: Date.now(), updatedAt: Date.now() } : demo));
@@ -787,10 +811,8 @@ export default function Home() {
     const audioFiles = candidates.filter((file) => file.type.startsWith("audio/") || /\.(wav|aif|aiff|mp3|m4a|flac|ogg|opus|aac)$/i.test(file.name));
     const skippedFiles = candidates.length - audioFiles.length;
     if (!audioFiles.length) { setBulkProgress(`No supported audio files found. ${skippedFiles} other ${skippedFiles === 1 ? "file was" : "files were"} ignored.`); return; }
-    const totalBytes = audioFiles.reduce((sum, file) => sum + file.size, 0);
-    if (storageInfo.quota && totalBytes > (storageInfo.quota - storageInfo.usage) * 0.95) { setBulkProgress(`Not enough storage. This import needs ${formatBytes(totalBytes)}, but about ${formatBytes(Math.max(0, storageInfo.quota - storageInfo.usage))} is available.`); return; }
-    const imported: Demo[] = [];
-    const knownChecksums = new Set(demos.map((demo) => demo.checksum).filter(Boolean));
+    const knownChecksums = await libraryAudioChecksums(undefined, setBulkProgress);
+    const uniqueFiles: Array<{ file: File; checksum: string }> = [];
     let duplicates = 0;
     for (let index = 0; index < audioFiles.length; index++) {
       const file = audioFiles[index];
@@ -798,7 +820,15 @@ export default function Home() {
       const checksum = await checksumBlob(file);
       if (knownChecksums.has(checksum)) { duplicates++; continue; }
       knownChecksums.add(checksum);
-      setBulkProgress(`Analyzing ${index + 1} of ${audioFiles.length}: ${file.name}`);
+      uniqueFiles.push({ file, checksum });
+    }
+    if (!uniqueFiles.length) { setBulkProgress(`Nothing new to import. ${duplicates} duplicate ${duplicates === 1 ? "file was" : "files were"} skipped.`); return; }
+    const totalBytes = uniqueFiles.reduce((sum, item) => sum + item.file.size, 0);
+    if (storageInfo.quota && totalBytes > (storageInfo.quota - storageInfo.usage) * 0.95) { setBulkProgress(`Not enough storage. The new files need ${formatBytes(totalBytes)}, but about ${formatBytes(Math.max(0, storageInfo.quota - storageInfo.usage))} is available.`); return; }
+    const imported: Demo[] = [];
+    for (let index = 0; index < uniqueFiles.length; index++) {
+      const { file, checksum } = uniqueFiles[index];
+      setBulkProgress(`Analyzing ${index + 1} of ${uniqueFiles.length}: ${file.name}`);
       const id = Date.now() + index;
       const analysis = await analyzeAudio(file);
       await putAudio(id, file);
@@ -811,7 +841,6 @@ export default function Home() {
         creationDate: extractCreationDate(title),
       });
     }
-    if (!imported.length) { setBulkProgress(`Nothing new to import. ${duplicates} duplicate ${duplicates === 1 ? "file was" : "files were"} skipped.`); return; }
     setTags((current) => mergeTags(current, batchTags));
     setDemos((current) => [...imported, ...current]);
     setSelectedId(imported[0].id);
