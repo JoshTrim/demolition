@@ -151,6 +151,26 @@ button, input, select, textarea { font:inherit; } button { cursor:pointer; }
 .bulk-error { color:#dba58f; background:#2c2420; border-color:#53392f; }
 .bulk-error>span { border:0; background:var(--coral); animation:none; }
 .bulk-privacy { display:block; margin-top:10px; color:#686860; text-align:center; font-size:8px; }
+
+/* Filename conflict review */
+.filename-conflict-modal { width:min(760px,100%); }
+.filename-conflict-modal>p strong { color:#d8d4ca; font-weight:600; }
+.conflict-counter { margin:-10px 0 14px; color:#85877d; font-size:8px; }
+.conflict-audition-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.conflict-audition-grid>section { min-width:0; padding:15px; display:flex; flex-direction:column; background:#1c1d19; border:1px solid #393b34; border-radius:6px; }
+.conflict-audition-grid>section>span { color:#777970; letter-spacing:1.1px; font-size:8px; }
+.conflict-audition-grid h3 { margin:9px 0 5px; overflow:hidden; color:#ddd9d0; text-overflow:ellipsis; white-space:nowrap; font-size:14px; }
+.conflict-audition-grid small { min-height:24px; color:#75776e; line-height:1.45; font-size:8px; }
+.conflict-audition-grid audio { width:100%; height:34px; margin:14px 0; filter:invert(.88) hue-rotate(35deg); }
+.conflict-audio-missing { height:34px; margin:14px 0; display:grid; place-items:center; color:#a27c73; background:#2b2320; border:1px solid #4e342f; border-radius:3px; font-size:8px; }
+.conflict-choice { width:100%; margin-top:auto; padding:10px; border-radius:4px; font-size:9px; font-weight:700; }
+.conflict-choice.existing { color:#c7c5bc; background:#2a2b26; border:1px solid #474940; }
+.conflict-choice.incoming { color:#20251a; background:var(--lime); border:1px solid var(--lime); }
+.keep-both-button { width:100%; margin-top:10px; padding:9px; color:#9fa196; background:none; border:1px solid #3e4039; border-radius:4px; font-size:9px; }
+.conflict-safety { display:block; margin-top:12px; color:#6f7168; line-height:1.5; font-size:8px; }
+.conflict-finalizing { min-height:210px; display:grid; place-items:center; align-content:center; gap:12px; color:#9daa88; }
+.conflict-finalizing i { width:18px; height:18px; border:2px solid #4d5740; border-top-color:var(--lime); border-radius:50%; animation:bulk-spin .8s linear infinite; }
+.conflict-finalizing p { margin:0; font-size:9px; }
 .primary-button:disabled,.modal-close:disabled { cursor:wait; opacity:.55; }
 @keyframes bulk-spin { to { transform:rotate(360deg); } }
 
@@ -161,6 +181,7 @@ button, input, select, textarea { font:inherit; } button { cursor:pointer; }
 @media (max-width:650px) {
   .bulk-choices { grid-template-columns:1fr; }
   .bulk-choice { min-height:105px; }
+  .conflict-audition-grid { grid-template-columns:1fr; }
 }
 
 /* Project management */

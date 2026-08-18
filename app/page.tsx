@@ -55,6 +55,22 @@ type ProjectMedia = {
 };
 type View = "library" | "revisit" | "project";
 type StorageInfo = { usage: number; quota: number; persisted: boolean };
+type PreparedAudio = { file: File; checksum: string; title?: string; bpm?: number; musicalKey?: string };
+type FilenameConflict = {
+  id: string;
+  existing: { kind: "demo"; demoId: number } | { kind: "incoming"; audio: PreparedAudio };
+  incoming: PreparedAudio;
+};
+type PendingBulkImport = {
+  destination: string;
+  batchTags: string[];
+  newFiles: PreparedAudio[];
+  replacements: Array<PreparedAudio & { demoId: number }>;
+  conflicts: FilenameConflict[];
+  exactDuplicates: number;
+  filenameSkipped: number;
+  skippedFiles: number;
+};
 
 const STORAGE_KEY = "demolition-workspace-clean-v1";
 const DB_NAME = "demolition-audio";
@@ -185,6 +201,10 @@ function formatDuration(seconds: number) {
   if (!Number.isFinite(seconds)) return "00:00";
   const minutes = Math.floor(seconds / 60);
   return `${String(minutes).padStart(2, "0")}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
+}
+
+function filenameKey(value: string) {
+  return value.normalize("NFKC").replace(/\.[^.]+$/, "").trim().replace(/\s+/g, " ").toLocaleLowerCase();
 }
 
 async function audioDuration(file: File) {
@@ -352,6 +372,11 @@ export default function Home() {
   const [showAdd, setShowAdd] = useState(false);
   const [showBulk, setShowBulk] = useState(false);
   const [bulkProgress, setBulkProgress] = useState("");
+  const [pendingBulkImport, setPendingBulkImport] = useState<PendingBulkImport>();
+  const [conflictProgress, setConflictProgress] = useState("");
+  const [conflictExistingUrl, setConflictExistingUrl] = useState<string>();
+  const [conflictIncomingUrl, setConflictIncomingUrl] = useState<string>();
+  const [finalizingConflicts, setFinalizingConflicts] = useState(false);
   const [showBulkDetect, setShowBulkDetect] = useState(false);
   const [detectProgress, setDetectProgress] = useState("");
   const [showStorage, setShowStorage] = useState(false);
@@ -395,6 +420,9 @@ export default function Home() {
   const annotationDragStartRef = useRef<number | undefined>(undefined);
   const waveformCacheRef = useRef(new Map<string, number[]>());
   const rapidActionsRef = useRef({ previous: () => undefined, next: () => undefined, down: () => undefined, up: () => undefined });
+  const activeFilenameConflict = pendingBulkImport?.conflicts[0];
+  const conflictExistingDemo = activeFilenameConflict?.existing.kind === "demo" ? demos.find((demo) => demo.id === activeFilenameConflict.existing.demoId) : undefined;
+  const conflictExistingIncoming = activeFilenameConflict?.existing.kind === "incoming" ? activeFilenameConflict.existing.audio : undefined;
 
   async function refreshStorageInfo() {
     const response = await fetch(apiUrl("/api/storage"));
@@ -537,6 +565,33 @@ export default function Home() {
   useEffect(() => {
     if (rapidMode && audioUrl) rapidAudioRef.current?.play().catch(() => undefined);
   }, [audioUrl, rapidMode]);
+
+  useEffect(() => {
+    if (!activeFilenameConflict) return;
+    let active = true;
+    let existingUrl: string | undefined;
+    const incomingUrl = URL.createObjectURL(activeFilenameConflict.incoming.file);
+    queueMicrotask(() => {
+      if (!active) return;
+      setConflictIncomingUrl(incomingUrl);
+      setConflictExistingUrl(undefined);
+    });
+    if (activeFilenameConflict.existing.kind === "incoming") {
+      existingUrl = URL.createObjectURL(activeFilenameConflict.existing.audio.file);
+      queueMicrotask(() => { if (active) setConflictExistingUrl(existingUrl); });
+    } else {
+      getAudio(activeFilenameConflict.existing.demoId).then((blob) => {
+        if (!active || !blob) return;
+        existingUrl = URL.createObjectURL(blob);
+        setConflictExistingUrl(existingUrl);
+      }).catch(() => undefined);
+    }
+    return () => {
+      active = false;
+      URL.revokeObjectURL(incomingUrl);
+      if (existingUrl) URL.revokeObjectURL(existingUrl);
+    };
+  }, [activeFilenameConflict]);
 
   useEffect(() => {
     if (!rapidMode || !editingTimedNoteUuid || !audioUrl) return;
@@ -732,9 +787,28 @@ export default function Home() {
     const checksum = hasFile ? await checksumBlob(file) : undefined;
     if (checksum && (await libraryAudioChecksums()).has(checksum)) { window.alert("This audio file is already in Demolition."); return; }
     if (hasFile && storageInfo.quota && file.size > storageInfo.quota - storageInfo.usage) { window.alert("There is not enough disk space available for this copy."); return; }
-    const analysis = hasFile ? await analyzeAudio(file) : { duration: "00:00", bpm: 0 };
     const title = String(form.get("title") || (hasFile ? file.name.replace(/\.[^.]+$/, "") : "Untitled demo"));
     const demoTags = parseTags(String(form.get("tags") || ""));
+    if (hasFile && checksum) {
+      const existing = demos.find((demo) => (!account || demo.ownerId === account.id) && demo.audioName && filenameKey(demo.audioName) === filenameKey(file.name));
+      if (existing) {
+        const incoming: PreparedAudio = {
+          file, checksum, title,
+          bpm: form.get("bpm") ? Number(form.get("bpm")) : undefined,
+          musicalKey: String(form.get("key") || "C maj"),
+        };
+        setPendingBulkImport({
+          destination: String(form.get("project") || "Unsorted"), batchTags: demoTags,
+          newFiles: [], replacements: [],
+          conflicts: [{ id: crypto.randomUUID(), existing: { kind: "demo", demoId: existing.id }, incoming }],
+          exactDuplicates: 0, filenameSkipped: 0, skippedFiles: 0,
+        });
+        setConflictProgress("");
+        setShowAdd(false);
+        return;
+      }
+    }
+    const analysis = hasFile ? await analyzeAudio(file) : { duration: "00:00", bpm: 0 };
     const next: Demo = {
       id,
       uuid: crypto.randomUUID(),
@@ -812,7 +886,7 @@ export default function Home() {
     const skippedFiles = candidates.length - audioFiles.length;
     if (!audioFiles.length) { setBulkProgress(`No supported audio files found. ${skippedFiles} other ${skippedFiles === 1 ? "file was" : "files were"} ignored.`); return; }
     const knownChecksums = await libraryAudioChecksums(undefined, setBulkProgress);
-    const uniqueFiles: Array<{ file: File; checksum: string }> = [];
+    const uniqueFiles: PreparedAudio[] = [];
     let duplicates = 0;
     for (let index = 0; index < audioFiles.length; index++) {
       const file = audioFiles[index];
@@ -825,32 +899,136 @@ export default function Home() {
     if (!uniqueFiles.length) { setBulkProgress(`Nothing new to import. ${duplicates} duplicate ${duplicates === 1 ? "file was" : "files were"} skipped.`); return; }
     const totalBytes = uniqueFiles.reduce((sum, item) => sum + item.file.size, 0);
     if (storageInfo.quota && totalBytes > (storageInfo.quota - storageInfo.usage) * 0.95) { setBulkProgress(`Not enough storage. The new files need ${formatBytes(totalBytes)}, but about ${formatBytes(Math.max(0, storageInfo.quota - storageInfo.usage))} is available.`); return; }
-    const imported: Demo[] = [];
-    for (let index = 0; index < uniqueFiles.length; index++) {
-      const { file, checksum } = uniqueFiles[index];
-      setBulkProgress(`Analyzing ${index + 1} of ${uniqueFiles.length}: ${file.name}`);
-      const id = Date.now() + index;
+    const versionsByFilename = new Map<string, FilenameConflict["existing"]>();
+    for (const demo of demos) {
+      if (account && demo.ownerId !== account.id) continue;
+      const key = filenameKey(demo.audioName || demo.title);
+      if (key && demo.audioName && !versionsByFilename.has(key)) versionsByFilename.set(key, { kind: "demo", demoId: demo.id });
+    }
+    const newFiles: PreparedAudio[] = [];
+    const conflicts: FilenameConflict[] = [];
+    for (const incoming of uniqueFiles) {
+      const key = filenameKey(incoming.file.name);
+      const existing = versionsByFilename.get(key);
+      if (existing) conflicts.push({ id: crypto.randomUUID(), existing, incoming });
+      else {
+        newFiles.push(incoming);
+        versionsByFilename.set(key, { kind: "incoming", audio: incoming });
+      }
+    }
+    const pending: PendingBulkImport = {
+      destination, batchTags, newFiles, replacements: [], conflicts,
+      exactDuplicates: duplicates, filenameSkipped: 0, skippedFiles,
+    };
+    if (conflicts.length) {
+      setPendingBulkImport(pending);
+      setConflictProgress("");
+      setBulkProgress("");
+      setShowBulk(false);
+      return;
+    }
+    await finalizeBulkImport(pending, setBulkProgress);
+  }
+
+  async function finalizeBulkImport(pending: PendingBulkImport, reportProgress: (message: string) => void) {
+    let imported = 0;
+    let firstChangedId: number | undefined;
+    for (let index = 0; index < pending.replacements.length; index++) {
+      const replacement = pending.replacements[index];
+      const existing = demos.find((demo) => demo.id === replacement.demoId);
+      if (!existing) continue;
+      reportProgress(`Replacing ${index + 1} of ${pending.replacements.length}: ${existing.title}`);
+      const analysis = await analyzeAudio(replacement.file);
+      await putAudio(existing.id, replacement.file);
+      const updatedAt = Date.now();
+      setDemos((current) => current.map((demo) => demo.id === existing.id ? {
+        ...demo, audioName: replacement.file.name, duration: analysis.duration,
+        bpm: analysis.bpm || demo.bpm, checksum: replacement.checksum,
+        fileSize: replacement.file.size, copyVerifiedAt: updatedAt, updatedAt,
+      } : demo));
+      firstChangedId ??= existing.id;
+    }
+    const usedIds = new Set(demos.map((demo) => demo.id));
+    let nextId = Date.now();
+    for (let index = 0; index < pending.newFiles.length; index++) {
+      const prepared = pending.newFiles[index];
+      const { file, checksum } = prepared;
+      reportProgress(`Importing ${index + 1} of ${pending.newFiles.length}: ${file.name}`);
+      while (usedIds.has(nextId)) nextId++;
+      const id = nextId++;
+      usedIds.add(id);
       const analysis = await analyzeAudio(file);
       await putAudio(id, file);
-      const title = file.name.replace(/\.[^.]+$/, "");
-      imported.push({
-        id, uuid: crypto.randomUUID(), ownerId: account?.id ?? "", title, bpm: analysis.bpm, key: "—", duration: analysis.duration,
-        status: "unheard", tags: batchTags, note: "", nextAction: "First proper listen",
-        rating: 0, project: destination, updatedAt: Date.now(), audioName: file.name,
-        checksum, fileSize: file.size, copyVerifiedAt: Date.now(),
-        creationDate: extractCreationDate(title),
-      });
+      const title = prepared.title || file.name.replace(/\.[^.]+$/, "");
+      const demo: Demo = {
+        id, uuid: crypto.randomUUID(), ownerId: account?.id ?? "", title, bpm: prepared.bpm ?? analysis.bpm, key: prepared.musicalKey || "—", duration: analysis.duration,
+        status: "unheard", tags: pending.batchTags, note: "", nextAction: "First proper listen",
+        rating: 0, project: pending.destination, updatedAt: Date.now(), audioName: file.name,
+        checksum, fileSize: file.size, copyVerifiedAt: Date.now(), creationDate: extractCreationDate(title),
+      };
+      imported++;
+      setDemos((current) => [demo, ...current]);
+      firstChangedId ??= id;
     }
-    setTags((current) => mergeTags(current, batchTags));
-    setDemos((current) => [...imported, ...current]);
-    setSelectedId(imported[0].id);
-    setProject(destination === "Unsorted" ? "All demos" : destination);
-    setView(destination === "Unsorted" ? "library" : "project");
+    if (imported) setTags((current) => mergeTags(current, pending.batchTags));
+    if (firstChangedId !== undefined) setSelectedId(firstChangedId);
+    setProject(pending.destination === "Unsorted" ? "All demos" : pending.destination);
+    setView(pending.destination === "Unsorted" ? "library" : "project");
     setProjectTab("tracklist");
-    setImportNotice(`${imported.length} audio ${imported.length === 1 ? "file" : "files"} imported${duplicates ? ` · ${duplicates} duplicate ${duplicates === 1 ? "file" : "files"} skipped` : ""}${skippedFiles ? ` · ${skippedFiles} non-audio ${skippedFiles === 1 ? "file" : "files"} ignored` : ""}.`);
+    const parts = [
+      imported ? `${imported} ${imported === 1 ? "demo" : "demos"} imported` : "",
+      pending.replacements.length ? `${pending.replacements.length} ${pending.replacements.length === 1 ? "demo" : "demos"} replaced` : "",
+      pending.exactDuplicates ? `${pending.exactDuplicates} exact ${pending.exactDuplicates === 1 ? "duplicate" : "duplicates"} skipped` : "",
+      pending.filenameSkipped ? `${pending.filenameSkipped} filename ${pending.filenameSkipped === 1 ? "conflict" : "conflicts"} kept existing` : "",
+      pending.skippedFiles ? `${pending.skippedFiles} non-audio ${pending.skippedFiles === 1 ? "file" : "files"} ignored` : "",
+    ].filter(Boolean);
+    setImportNotice(`${parts.join(" · ")}.`);
     setBulkProgress("");
+    setConflictProgress("");
+    setPendingBulkImport(undefined);
     setShowBulk(false);
+    setFinalizingConflicts(false);
     refreshStorageInfo().catch(() => undefined);
+  }
+
+  async function resolveFilenameConflict(decision: "existing" | "incoming" | "both") {
+    if (!pendingBulkImport || !activeFilenameConflict || finalizingConflicts) return;
+    let remaining = pendingBulkImport.conflicts.slice(1);
+    if (decision === "incoming" && activeFilenameConflict.existing.kind === "incoming") {
+      const previousChecksum = activeFilenameConflict.existing.audio.checksum;
+      remaining = remaining.map((conflict) => conflict.existing.kind === "incoming" && conflict.existing.audio.checksum === previousChecksum
+        ? { ...conflict, existing: { kind: "incoming" as const, audio: activeFilenameConflict.incoming } }
+        : conflict);
+    }
+    const next: PendingBulkImport = {
+      ...pendingBulkImport,
+      conflicts: remaining,
+      newFiles: decision === "both" ? [...pendingBulkImport.newFiles, activeFilenameConflict.incoming] : pendingBulkImport.newFiles,
+      replacements: decision === "incoming" && activeFilenameConflict.existing.kind === "demo" ? [...pendingBulkImport.replacements, { ...activeFilenameConflict.incoming, demoId: activeFilenameConflict.existing.demoId }] : pendingBulkImport.replacements,
+      filenameSkipped: decision === "existing" ? pendingBulkImport.filenameSkipped + 1 : pendingBulkImport.filenameSkipped,
+    };
+    if (decision === "incoming" && activeFilenameConflict.existing.kind === "incoming") {
+      const previousChecksum = activeFilenameConflict.existing.audio.checksum;
+      next.newFiles = next.newFiles.map((item) => item.checksum === previousChecksum ? activeFilenameConflict.incoming : item);
+    }
+    if (remaining.length) {
+      setPendingBulkImport(next);
+      return;
+    }
+    setPendingBulkImport(next);
+    setFinalizingConflicts(true);
+    try {
+      await finalizeBulkImport(next, setConflictProgress);
+    } catch (error) {
+      setConflictProgress(error instanceof Error ? error.message : "The import could not be completed.");
+      setFinalizingConflicts(false);
+    }
+  }
+
+  function cancelFilenameConflicts() {
+    if (finalizingConflicts) return;
+    setPendingBulkImport(undefined);
+    setConflictProgress("");
   }
 
   async function detectSelectedBpm() {
@@ -1420,6 +1598,36 @@ export default function Home() {
       {showStorage && <div className="modal-backdrop"><section className="modal storage-modal" aria-label="Storage health"><button type="button" className="modal-close" onClick={() => setShowStorage(false)}>×</button><div className="eyebrow">STORAGE HEALTH</div><h2>Storage status</h2><p>Metadata is stored in SQLite. Audio and moodboard files are copied into Demolition’s local data folder.</p><div className="storage-meter"><div><strong>{formatBytes(storageInfo.usage)}</strong><span>used · {formatBytes(Math.max(0, storageInfo.quota - storageInfo.usage))} free</span></div><b>{Math.round(storagePercent)}%</b><div className="storage-bar"><span style={{ width: `${storagePercent}%` }} /></div></div><div className="health-grid"><div className="health-good"><span>✓</span><strong>Local persistent storage</strong><small>The database and managed copies remain on this machine.</small><button onClick={requestPersistentStorage}>Refresh status</button></div><div className="health-good"><span>♢</span><strong>{demos.filter((demo) => demo.checksum).length} checksummed copies</strong><small>SHA-256 fingerprints detect duplicates and unexpected byte changes.</small><button onClick={verifyAudioCopies}>Verify all copies</button></div></div>{storageProgress && <div className="storage-result" role="status">{storageProgress.startsWith("Verifying") ? <i /> : <span>✓</span>}<p>{storageProgress}</p></div>}<div className="backup-clarity"><strong>Metadata backup ≠ audio backup</strong><p>Export Backup preserves your catalogue, projects, notes, and checksums. Your original music files remain the authoritative audio backup.</p></div><button className="primary-button modal-submit" onClick={() => setShowStorage(false)}>Done</button></section></div>}
 
       {showBulkDetect && <div className="modal-backdrop"><form className="modal bpm-bulk-modal" onSubmit={bulkDetectBpm}><button type="button" className="modal-close" disabled={detectProgress.startsWith("Analyzing")} onClick={() => setShowBulkDetect(false)}>×</button><div className="eyebrow">BULK BPM DETECTION</div><h2>Detect BPM</h2><p>Demolition reads each attached audio file locally and estimates its tempo. Manual BPM values are preserved by default.</p><fieldset className="choice-group"><legend>Which demos?</legend><label aria-label="Analyze demos with missing BPM only"><input type="radio" name="mode" value="missing" defaultChecked /><span><strong>Missing BPM only</strong><small>{demos.filter((demo) => !demo.bpm).length} demos currently need analysis</small></span></label><label aria-label="Re-analyze all demo BPM values"><input type="radio" name="mode" value="all" /><span><strong>Re-analyze all</strong><small>Overwrites existing BPM values in the chosen scope</small></span></label></fieldset><fieldset className="choice-group"><legend>Scope</legend><label aria-label="Analyze the entire library"><input type="radio" name="scope" value="library" defaultChecked /><span><strong>Entire library</strong><small>{demos.length} demos</small></span></label>{view === "project" && project !== "Unsorted" && <label aria-label={`Analyze ${project} only`}><input type="radio" name="scope" value="project" /><span><strong>{project}</strong><small>{demos.filter((demo) => demo.project === project).length} demos in this project</small></span></label>}</fieldset>{detectProgress && <div className={`bulk-progress ${detectProgress.startsWith("No ") ? "bulk-error" : ""}`}><span /><p>{detectProgress}</p></div>}<button className="primary-button modal-submit" disabled={detectProgress.startsWith("Analyzing")} type="submit">{detectProgress.startsWith("Analyzing") ? "Analyzing catalogue…" : "Start BPM detection"} <span>→</span></button><small className="bulk-privacy">Tracks without attached audio are skipped. BPM remains manually editable.</small></form></div>}
+
+      {pendingBulkImport && <div className="modal-backdrop">
+        <section className="modal filename-conflict-modal" aria-label="Filename conflict review">
+          <button type="button" className="modal-close" disabled={finalizingConflicts} onClick={cancelFilenameConflicts}>×</button>
+          <div className="eyebrow">FILENAME CONFLICT</div>
+          <h2>{finalizingConflicts ? "Applying your choices" : "Audition both versions"}</h2>
+          {activeFilenameConflict && (conflictExistingDemo || conflictExistingIncoming) && !finalizingConflicts ? <>
+            <p><strong>{activeFilenameConflict.incoming.file.name}</strong> has the same filename as {conflictExistingDemo ? "a demo already in the library" : "another file in this import"}, but the audio contents differ.</p>
+            <div className="conflict-counter">{pendingBulkImport.conflicts.length} {pendingBulkImport.conflicts.length === 1 ? "conflict" : "conflicts"} remaining</div>
+            <div className="conflict-audition-grid">
+              <section>
+                <span>{conflictExistingDemo ? "EXISTING DEMO" : "EARLIER FILE"}</span>
+                <h3>{conflictExistingDemo?.title || conflictExistingIncoming?.file.name.replace(/\.[^.]+$/, "")}</h3>
+                <small>{conflictExistingDemo ? `${conflictExistingDemo.duration} · ${formatBytes(conflictExistingDemo.fileSize || 0)} · added ${new Date(conflictExistingDemo.updatedAt).toLocaleDateString("en-AU")}` : `${formatBytes(conflictExistingIncoming?.file.size || 0)} · selected earlier in this import`}</small>
+                {conflictExistingUrl ? <audio src={conflictExistingUrl} controls preload="metadata"><track kind="captions" src="data:text/vtt,WEBVTT" srcLang="en" label="Existing version audio" /></audio> : <div className="conflict-audio-missing">Existing managed copy unavailable</div>}
+                <button className="conflict-choice existing" onClick={() => resolveFilenameConflict("existing")}>Keep this version</button>
+              </section>
+              <section>
+                <span>INCOMING FILE</span>
+                <h3>{activeFilenameConflict.incoming.file.name.replace(/\.[^.]+$/, "")}</h3>
+                <small>{formatBytes(activeFilenameConflict.incoming.file.size)} · selected from this import</small>
+                {conflictIncomingUrl && <audio src={conflictIncomingUrl} controls preload="metadata"><track kind="captions" src="data:text/vtt,WEBVTT" srcLang="en" label="Incoming demo audio" /></audio>}
+                <button className="conflict-choice incoming" onClick={() => resolveFilenameConflict("incoming")}>Use incoming</button>
+              </section>
+            </div>
+            <button className="keep-both-button" onClick={() => resolveFilenameConflict("both")}>Keep both as separate demos</button>
+            <small className="conflict-safety">{conflictExistingDemo ? "Using the incoming version replaces only Demolition’s managed copy. Project assignment, tags, votes, and notes stay attached to the existing demo. " : "Only the version you choose will be copied unless you keep both. "}Source files remain untouched.</small>
+          </> : <div className="conflict-finalizing"><i /><p>{conflictProgress || "Preparing files…"}</p></div>}
+        </section>
+      </div>}
 
       {showBulk && <div className="modal-backdrop"><form className="modal bulk-modal" onSubmit={bulkImport}><button type="button" className="modal-close" disabled={/^(Checking|Analyzing)/.test(bulkProgress)} onClick={() => setShowBulk(false)}>×</button><div className="eyebrow">BULK IMPORT</div><h2>Import audio files</h2><p>Select a folder or choose several audio files. Every imported demo can receive the same batch tags.</p><div className="source-safety"><span>✓</span><div><strong>Your source files are read-only</strong><small>Demolition creates app-managed local copies. It cannot rename, overwrite, or delete anything in the selected folder.</small></div></div><div className="bulk-choices"><label className="file-drop bulk-choice"><span className="bulk-icon">▤</span><strong>Choose a folder</strong><small>Audio from all subfolders · other files ignored</small><input name="folder" type="file" accept="audio/*,.wav,.aif,.aiff,.mp3,.m4a,.flac,.ogg,.opus,.aac" multiple webkitdirectory="" /></label><label className="file-drop bulk-choice"><span className="bulk-icon">♪</span><strong>Choose audio files</strong><small>Select multiple files</small><input name="files" type="file" accept="audio/*,.wav,.aif,.aiff,.mp3,.m4a,.flac,.ogg,.opus,.aac" multiple /></label></div><label>Destination<select name="project" defaultValue={project !== "All demos" && project !== "Unsorted" ? project : projects[0]?.name ?? "Unsorted"}>{projectNames.map((name) => <option key={name}>{name}</option>)}</select></label><label>Batch tags<input name="tags" list="known-tags" placeholder="e.g. April exports, laptop sessions" /><span className="field-hint">Comma separated · applied to every file in this import</span></label>{bulkProgress && <div className={`bulk-progress ${bulkProgress.startsWith("No ") || bulkProgress.startsWith("Not ") || bulkProgress.startsWith("Nothing ") ? "bulk-error" : ""}`}><span /><p>{bulkProgress}</p></div>}<button className="primary-button modal-submit" disabled={/^(Checking|Analyzing)/.test(bulkProgress)} type="submit">{/^(Checking|Analyzing)/.test(bulkProgress) ? "Checking and analyzing…" : "Import safe copies"} <span>→</span></button><small className="bulk-privacy">Only Demolition&apos;s managed copies can be removed from this app.</small></form></div>}
 

@@ -110,6 +110,12 @@ test("keeps local data out of version control", async () => {
   assert.match(page, /libraryAudioChecksums/);
   assert.match(page, /Indexing existing demo/);
   assert.match(page, /uniqueFiles/);
+  assert.match(page, /filenameKey/);
+  assert.match(page, /FILENAME CONFLICT/);
+  assert.match(page, /Audition both versions/);
+  assert.match(page, /resolveFilenameConflict\("existing"\)/);
+  assert.match(page, /resolveFilenameConflict\("incoming"\)/);
+  assert.match(page, /resolveFilenameConflict\("both"\)/);
   assert.match(page, /annotation-waveform/);
   assert.match(page, /rapidActiveNoteUuids/);
   assert.match(page, /editTimedNote\(note\)/);
