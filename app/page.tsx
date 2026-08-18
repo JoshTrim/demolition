@@ -242,6 +242,33 @@ async function analyzeAudio(file: Blob): Promise<{ duration: string; bpm: number
   }
 }
 
+async function waveformPeaks(file: Blob, barCount = 160) {
+  const context = new window.AudioContext();
+  try {
+    const buffer = await context.decodeAudioData(await file.arrayBuffer());
+    const peaks = Array.from({ length: barCount }, () => 0);
+    const samplesPerBar = Math.max(1, Math.floor(buffer.length / barCount));
+    let overallPeak = 0;
+    for (let bar = 0; bar < barCount; bar++) {
+      const start = bar * samplesPerBar;
+      const end = Math.min(buffer.length, start + samplesPerBar);
+      let peak = 0;
+      const stride = Math.max(1, Math.floor((end - start) / 180));
+      for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
+        const samples = buffer.getChannelData(channel);
+        for (let index = start; index < end; index += stride) peak = Math.max(peak, Math.abs(samples[index]));
+      }
+      peaks[bar] = peak;
+      overallPeak = Math.max(overallPeak, peak);
+    }
+    return peaks.map((peak) => Math.max(0.08, overallPeak ? peak / overallPeak : 0.08));
+  } catch {
+    return [];
+  } finally {
+    await context.close().catch(() => undefined);
+  }
+}
+
 function relativeDate(timestamp: number) {
   const days = Math.max(0, Math.floor((Date.now() - timestamp) / day));
   if (days === 0) return "Today";
@@ -341,8 +368,11 @@ export default function Home() {
   const [rapidVoteEventUuid, setRapidVoteEventUuid] = useState<string>();
   const [rapidDuration, setRapidDuration] = useState(0);
   const [rapidCurrentTime, setRapidCurrentTime] = useState(0);
+  const [detailCurrentTime, setDetailCurrentTime] = useState(0);
+  const [waveform, setWaveform] = useState<number[]>([]);
   const [timedNoteRange, setTimedNoteRange] = useState<{ start: number; end: number }>();
   const [timedNoteDraft, setTimedNoteDraft] = useState("");
+  const [editingTimedNoteUuid, setEditingTimedNoteUuid] = useState<string>();
   const [importNotice, setImportNotice] = useState("");
   const [detectingId, setDetectingId] = useState<number>();
   const [showEdit, setShowEdit] = useState(false);
@@ -362,7 +392,8 @@ export default function Home() {
   const detailAudioRef = useRef<HTMLAudioElement>(null);
   const rapidAudioRef = useRef<HTMLAudioElement>(null);
   const annotationRailRef = useRef<HTMLDivElement>(null);
-  const annotationDragStartRef = useRef<number>();
+  const annotationDragStartRef = useRef<number | undefined>(undefined);
+  const waveformCacheRef = useRef(new Map<string, number[]>());
   const rapidActionsRef = useRef({ previous: () => undefined, next: () => undefined, down: () => undefined, up: () => undefined });
 
   async function refreshStorageInfo() {
@@ -455,16 +486,40 @@ export default function Home() {
     let active = true;
     getAudio(selectedId).then((blob) => {
       if (blob && active) {
+        setDetailCurrentTime(0);
         currentUrl = URL.createObjectURL(blob);
         setAudioUrl(currentUrl);
-      } else if (active) setAudioUrl(undefined);
-    }).catch(() => undefined);
+        const demo = demos.find((item) => item.id === selectedId);
+        const cacheKey = demo?.checksum || `${selectedId}:${blob.size}`;
+        const cached = waveformCacheRef.current.get(cacheKey);
+        if (cached) setWaveform(cached);
+        else {
+          setWaveform([]);
+          waveformPeaks(blob).then((peaks) => {
+            if (!active) return;
+            waveformCacheRef.current.set(cacheKey, peaks);
+            setWaveform(peaks);
+          });
+        }
+      } else if (active) {
+        setAudioUrl(undefined);
+        setWaveform([]);
+        setDetailCurrentTime(0);
+      }
+    }).catch(() => { if (active) setWaveform([]); });
     return () => { active = false; if (currentUrl) URL.revokeObjectURL(currentUrl); };
   }, [selectedId, demos]);
 
   useEffect(() => {
     if (rapidMode && audioUrl) rapidAudioRef.current?.play().catch(() => undefined);
   }, [audioUrl, rapidMode]);
+
+  useEffect(() => {
+    if (!rapidMode || !editingTimedNoteUuid || !audioUrl) return;
+    const note = timedNotes.find((item) => item.noteUuid === editingTimedNoteUuid);
+    const player = rapidAudioRef.current;
+    if (note && player && player.readyState >= 1) player.currentTime = note.startSeconds;
+  }, [audioUrl, editingTimedNoteUuid, rapidDuration, rapidMode, timedNotes]);
 
   useEffect(() => {
     if (!rapidMode) return;
@@ -528,14 +583,59 @@ export default function Home() {
   const selectedFriendScore = selected && account ? listens.filter((listen) => listen.demoId === selected.id && listen.authorId !== account.id).reduce((score, listen) => score + (listen.verdict === "up" ? 1 : -1), 0) : 0;
   const rapidStats = rapidDemo ? statsFor(rapidDemo.id) : statsFor(0);
   const rapidTimedNotes = rapidDemo ? timedNotes.filter((note) => note.demoId === rapidDemo.id).sort((a, b) => a.startSeconds - b.startSeconds) : [];
+  const selectedActiveNoteUuids = new Set(selectedTimedNotes.filter((note) => detailCurrentTime >= note.startSeconds && detailCurrentTime <= note.endSeconds).map((note) => note.noteUuid));
+  const rapidActiveNoteUuids = new Set(rapidTimedNotes.filter((note) => rapidCurrentTime >= note.startSeconds && rapidCurrentTime <= note.endSeconds).map((note) => note.noteUuid));
   const rapidDownSelected = rapidVote === "down";
   const rapidUpSelected = rapidVote === "up";
   const selectedListenHistory = selectedListens.length > 0 ? <div className="listen-history"><span className="eyebrow">RECENT LISTENS</span>{selectedListens.map((listen) => <div className={`listen-event ${listen.verdict}`} key={listen.eventUuid || listen.id}><b>{listen.verdict === "up" ? "↑" : "↓"}</b><span><i>{listen.authorId === account?.id ? "You" : listen.authorName}</i>{listen.note || "No note"}<small>{new Date(listen.listenedAt).toLocaleDateString("en-AU")}</small></span></div>)}</div> : null;
-  const selectedTimedNoteHistory = selectedTimedNotes.length > 0 ? <div className="timed-note-history"><span className="eyebrow">TIMED NOTES</span>{selectedTimedNotes.map((note) => <button key={note.noteUuid} onClick={() => seekTimedNote(note)}><b>{formatDuration(note.startSeconds)}–{formatDuration(note.endSeconds)}</b><span><i>{note.authorId === account?.id ? "You" : note.authorName}</i>{note.note}</span></button>)}</div> : null;
+  const selectedTimedNoteHistory = selectedTimedNotes.length > 0 ? <div className="timed-note-history"><span className="eyebrow">TIMED NOTES</span>{selectedTimedNotes.map((note) => <div className={`timed-note-history-row ${selectedActiveNoteUuids.has(note.noteUuid) ? "active" : ""}`} key={note.noteUuid}><button className="timed-note-jump" onClick={() => seekTimedNote(note)}><b>{formatDuration(note.startSeconds)}–{formatDuration(note.endSeconds)}</b><span><i>{note.authorId === account?.id ? "You" : note.authorName}</i>{note.note}</span></button>{note.authorId === account?.id && <div className="timed-note-actions"><button onClick={() => editTimedNote(note)}>Edit</button><button onClick={() => deleteTimedNote(note)}>Delete</button></div>}</div>)}</div> : null;
   const selectedSharing = selected && account ? selected.ownerId === account.id
     ? <div className="detail-section sharing-section"><div className="detail-section-head"><span>SHARED WITH</span><button onClick={() => setShowAccount(true)}>manage</button></div><div className="share-friends">{friends.map((friend) => { const active = shares.some((share) => share.demoUuid === selected.uuid && share.friendId === friend.id); return <button key={friend.id} className={active ? "shared" : ""} onClick={() => toggleDemoShare(selected, friend.id)}><span>{active ? "✓" : "+"}</span>{friend.displayName}</button>; })}{friends.length === 0 && <small>No friends connected.</small>}</div></div>
     : <div className="detail-section remote-source"><div className="detail-section-head"><span>SHARED BY</span></div><p>{friends.find((friend) => friend.id === selected.ownerId)?.displayName || "Friend"}</p></div> : null;
-  const rapidAnnotationTransport = audioUrl ? <section className="annotation-transport"><div className="annotation-head"><span>TIMED NOTES</span><small>Drag across the timeline to select a range</small></div><div ref={annotationRailRef} className={`annotation-rail ${rapidDuration ? "ready" : ""}`} aria-label="Drag to select a timed note range" onPointerDown={beginTimedNoteRange} onPointerMove={moveTimedNoteRange} onPointerUp={finishTimedNoteRange} onPointerCancel={() => { annotationDragStartRef.current = undefined; }}><span className="annotation-progress" style={{ width: `${rapidDuration ? rapidCurrentTime / rapidDuration * 100 : 0}%` }} />{rapidTimedNotes.map((note) => <i key={note.noteUuid} className="saved-range" style={{ left: `${rapidDuration ? note.startSeconds / rapidDuration * 100 : 0}%`, width: `${rapidDuration ? Math.max(0.7, (note.endSeconds - note.startSeconds) / rapidDuration * 100) : 0}%` }} title={`${formatDuration(note.startSeconds)}–${formatDuration(note.endSeconds)} · ${note.note}`} />)}{timedNoteRange && <i className="draft-range" style={{ left: `${timedNoteRange.start / rapidDuration * 100}%`, width: `${Math.max(0.7, (timedNoteRange.end - timedNoteRange.start) / rapidDuration * 100)}%` }} />}</div><div className="annotation-times"><span>{formatDuration(rapidCurrentTime)}</span><span>{formatDuration(rapidDuration)}</span></div>{timedNoteRange && <form className="timed-note-editor" onSubmit={saveTimedNote}><div><b>{formatDuration(timedNoteRange.start)}–{formatDuration(timedNoteRange.end)}</b><button type="button" onClick={() => { setTimedNoteRange(undefined); setTimedNoteDraft(""); }}>Cancel</button></div><textarea value={timedNoteDraft} onChange={(event) => setTimedNoteDraft(event.target.value)} rows={2} placeholder="What applies to this section?" /><button type="submit" disabled={!timedNoteDraft.trim()}>Save timed note</button></form>}{rapidTimedNotes.length > 0 && <div className="rapid-timed-notes">{rapidTimedNotes.map((note) => <button key={note.noteUuid} onClick={() => seekTimedNote(note)}><b>{formatDuration(note.startSeconds)}–{formatDuration(note.endSeconds)}</b><span>{note.note}</span><small>{note.authorId === account?.id ? "You" : note.authorName}</small></button>)}</div>}</section> : null;
+  const rapidAnnotationTransport = audioUrl ? (
+    <section className="annotation-transport">
+      <div className="annotation-head"><span>TIMED NOTES</span><small>Drag across the waveform to select a range</small></div>
+      <div
+        ref={annotationRailRef}
+        className={`annotation-rail ${rapidDuration ? "ready" : ""}`}
+        aria-label="Drag across the waveform to select a timed note range"
+        onPointerDown={beginTimedNoteRange}
+        onPointerMove={moveTimedNoteRange}
+        onPointerUp={finishTimedNoteRange}
+        onPointerCancel={() => { annotationDragStartRef.current = undefined; }}
+      >
+        <span className="annotation-progress" style={{ width: `${rapidDuration ? rapidCurrentTime / rapidDuration * 100 : 0}%` }} />
+        <span className="annotation-waveform" aria-hidden="true">
+          {waveform.map((peak, index) => <i key={index} style={{ height: `${Math.max(2, peak * 100)}%` }} />)}
+        </span>
+        {rapidTimedNotes.map((note) => <i
+          key={note.noteUuid}
+          className={`saved-range ${rapidActiveNoteUuids.has(note.noteUuid) ? "active" : ""}`}
+          style={{
+            left: `${rapidDuration ? note.startSeconds / rapidDuration * 100 : 0}%`,
+            width: `${rapidDuration ? Math.max(0.7, (note.endSeconds - note.startSeconds) / rapidDuration * 100) : 0}%`,
+          }}
+          title={`${formatDuration(note.startSeconds)}–${formatDuration(note.endSeconds)} · ${note.note}`}
+        />)}
+        {timedNoteRange && <i className="draft-range" style={{
+          left: `${timedNoteRange.start / rapidDuration * 100}%`,
+          width: `${Math.max(0.7, (timedNoteRange.end - timedNoteRange.start) / rapidDuration * 100)}%`,
+        }} />}
+      </div>
+      <div className="annotation-times"><span>{formatDuration(rapidCurrentTime)}</span><span>{formatDuration(rapidDuration)}</span></div>
+      {timedNoteRange && <form className="timed-note-editor" onSubmit={saveTimedNote}>
+        <div><b>{editingTimedNoteUuid ? "EDIT " : ""}{formatDuration(timedNoteRange.start)}–{formatDuration(timedNoteRange.end)}</b><button type="button" onClick={cancelTimedNoteEdit}>Cancel</button></div>
+        <textarea value={timedNoteDraft} onChange={(event) => setTimedNoteDraft(event.target.value)} rows={2} placeholder="What applies to this section?" />
+        <button type="submit" disabled={!timedNoteDraft.trim()}>{editingTimedNoteUuid ? "Update timed note" : "Save timed note"}</button>
+      </form>}
+      {rapidTimedNotes.length > 0 && <div className="rapid-timed-notes">
+        {rapidTimedNotes.map((note) => <div className={`rapid-timed-note-row ${rapidActiveNoteUuids.has(note.noteUuid) ? "active" : ""}`} key={note.noteUuid}>
+          <button className="timed-note-jump" onClick={() => seekTimedNote(note)}><b>{formatDuration(note.startSeconds)}–{formatDuration(note.endSeconds)}</b><span>{note.note}</span><small>{note.authorId === account?.id ? "You" : note.authorName}</small></button>
+          {note.authorId === account?.id && <div className="timed-note-actions"><button onClick={() => editTimedNote(note)}>Edit</button><button onClick={() => deleteTimedNote(note)}>Delete</button></div>}
+        </div>)}
+      </div>}
+    </section>
+  ) : null;
   const storagePercent = storageInfo.quota ? Math.min(100, storageInfo.usage / storageInfo.quota * 100) : 0;
 
   const visibleDemos = useMemo(() => {
@@ -808,6 +908,7 @@ export default function Home() {
     setRapidDuration(0);
     setTimedNoteRange(undefined);
     setTimedNoteDraft("");
+    setEditingTimedNoteUuid(undefined);
     annotationDragStartRef.current = undefined;
   }
 
@@ -851,6 +952,17 @@ export default function Home() {
   function saveTimedNote(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!rapidDemo || !account || !timedNoteRange || !timedNoteDraft.trim()) return;
+    if (editingTimedNoteUuid) {
+      setTimedNotes((current) => current.map((note) => note.noteUuid === editingTimedNoteUuid && note.authorId === account.id ? {
+        ...note,
+        startSeconds: timedNoteRange.start,
+        endSeconds: timedNoteRange.end,
+        note: timedNoteDraft.trim(),
+        signature: undefined,
+      } : note));
+      cancelTimedNoteEdit();
+      return;
+    }
     const createdAt = Date.now();
     setTimedNotes((current) => [...current, {
       id: createdAt * 1000 + Math.floor(Math.random() * 1000), noteUuid: crypto.randomUUID(),
@@ -859,6 +971,33 @@ export default function Home() {
     }]);
     setTimedNoteRange(undefined);
     setTimedNoteDraft("");
+  }
+
+  function cancelTimedNoteEdit() {
+    setTimedNoteRange(undefined);
+    setTimedNoteDraft("");
+    setEditingTimedNoteUuid(undefined);
+  }
+
+  function editTimedNote(note: TimedNote) {
+    if (!account || note.authorId !== account.id) return;
+    if (!rapidMode || rapidDemo?.id !== note.demoId) {
+      resetRapidResponse();
+      setRapidIds([note.demoId]);
+      setRapidIndex(0);
+      setSelectedId(note.demoId);
+      setRapidMode(true);
+    }
+    setEditingTimedNoteUuid(note.noteUuid);
+    setTimedNoteRange({ start: note.startSeconds, end: note.endSeconds });
+    setTimedNoteDraft(note.note);
+  }
+
+  function deleteTimedNote(note: TimedNote) {
+    if (!account || note.authorId !== account.id) return;
+    if (!window.confirm(`Delete the timed note at ${formatDuration(note.startSeconds)}?`)) return;
+    setTimedNotes((current) => current.filter((item) => item.noteUuid !== note.noteUuid));
+    if (editingTimedNoteUuid === note.noteUuid) cancelTimedNoteEdit();
   }
 
   function seekTimedNote(note: TimedNote) {
@@ -1239,7 +1378,7 @@ export default function Home() {
 
             {view === "project" && project !== "Unsorted" && <aside className="candidate-panel" onDragOver={(event) => event.preventDefault()} onDrop={dropInCandidatePool}><div className="candidate-head"><div><span className="eyebrow">CANDIDATE POOL</span><h3>{projectCandidates.length} candidate {projectCandidates.length === 1 ? "track" : "tracks"}</h3></div><span>Drag into tracklist →</span></div><div className="candidate-list">{projectCandidates.map((demo) => <div key={demo.id} className="candidate-row" draggable onDragStart={() => setDraggedId(demo.id)}><button onClick={() => setSelectedId(demo.id)}><span className={`cover cover-${demo.id % 4}`}><i /></span><span><strong>{demo.title}</strong><small>{demo.bpm ? `${demo.bpm} BPM` : "BPM unknown"} · {statusLabels[demo.status]}</small></span></button><button className="promote-button" onClick={() => setOrders((current) => ({ ...current, [project]: [...(current[project] ?? []).filter((id) => id !== demo.id), demo.id] }))} aria-label={`Add ${demo.title} to tracklist`}>＋</button></div>)}{projectCandidates.length === 0 && <div className="candidate-empty"><span>✓</span><strong>No candidates</strong><small>Import demos here or drag a track out of the tracklist.</small></div>}</div><div className="candidate-drop">← Drop here to return a track to the pool</div></aside>}
 
-            {selected && (view !== "project" || project === "Unsorted") && <aside className="detail-panel"><div className="detail-top"><span className="eyebrow">SELECTED DEMO</span><button className="more-button" onClick={openEdit}>Edit</button></div><div className={`focus-cover cover-${selected.id % 4}`}><span>✳</span></div><h3>{selected.title}</h3><div className="focus-meta">{selected.bpm ? `${selected.bpm} BPM` : "BPM —"} <i>·</i> {selected.key} <i>·</i> {selected.duration}</div><button className="detect-bpm" disabled={detectingId === selected.id} onClick={detectSelectedBpm}>{detectingId === selected.id ? "◌ Analyzing tempo…" : "⌁ Detect BPM again"}</button><div className="listen-summary" aria-label={"Listen score " + selectedStats.score}><span><b>{selectedStats.up}</b> ↑</span><span><b>{selectedStats.down}</b> ↓</span><strong>{selectedStats.score > 0 ? "+" + selectedStats.score : selectedStats.score}</strong><small>{selectedStats.count} {selectedStats.count === 1 ? "listen" : "listens"} · You {selectedOwnerScore > 0 ? "+" + selectedOwnerScore : selectedOwnerScore} · Friends {selectedFriendScore > 0 ? "+" + selectedFriendScore : selectedFriendScore}</small></div>{selectedListenHistory}{selectedTimedNoteHistory}{audioUrl ? <><audio ref={detailAudioRef} className="audio-player" src={audioUrl} controls preload="metadata"><track kind="captions" src="data:text/vtt,WEBVTT" srcLang="en" label="Instrumental audio" /></audio><button className="remove-copy" onClick={removeSelectedAudioCopy}>Remove local copy</button></> : <button className="audio-empty" onClick={() => attachRef.current?.click()}><span>＋</span> Attach an audio bounce</button>}<input ref={attachRef} className="sr-only" type="file" accept="audio/*,.wav,.aif,.aiff,.mp3,.m4a,.flac" onChange={attachAudio} />{selectedSharing}<div className="detail-section"><div className="detail-section-head"><span>NEXT ACTION</span><button onClick={openEdit}>edit</button></div><p className="next-action">→ {selected.nextAction || "No next action set"}</p></div><div className="detail-section"><div className="detail-section-head"><span>NOTES</span><button onClick={openEdit}>edit</button></div><p>{selected.note || "No notes yet."}</p></div><div className="detail-section"><div className="detail-section-head"><span>PROJECT</span><button onClick={openEdit}>change</button></div><div className="assigned-project"><span className="project-dot coral" />{selected.project}<span>↗</span></div></div><button className="open-demo" onClick={openEdit}>Edit demo <span>↗</span></button></aside>}
+            {selected && (view !== "project" || project === "Unsorted") && <aside className="detail-panel"><div className="detail-top"><span className="eyebrow">SELECTED DEMO</span><button className="more-button" onClick={openEdit}>Edit</button></div><div className={`focus-cover cover-${selected.id % 4}`}><span>✳</span></div><h3>{selected.title}</h3><div className="focus-meta">{selected.bpm ? `${selected.bpm} BPM` : "BPM —"} <i>·</i> {selected.key} <i>·</i> {selected.duration}</div><button className="detect-bpm" disabled={detectingId === selected.id} onClick={detectSelectedBpm}>{detectingId === selected.id ? "◌ Analyzing tempo…" : "⌁ Detect BPM again"}</button><div className="listen-summary" aria-label={"Listen score " + selectedStats.score}><span><b>{selectedStats.up}</b> ↑</span><span><b>{selectedStats.down}</b> ↓</span><strong>{selectedStats.score > 0 ? "+" + selectedStats.score : selectedStats.score}</strong><small>{selectedStats.count} {selectedStats.count === 1 ? "listen" : "listens"} · You {selectedOwnerScore > 0 ? "+" + selectedOwnerScore : selectedOwnerScore} · Friends {selectedFriendScore > 0 ? "+" + selectedFriendScore : selectedFriendScore}</small></div>{selectedListenHistory}{selectedTimedNoteHistory}{audioUrl ? <><audio ref={detailAudioRef} className="audio-player" src={audioUrl} controls preload="metadata" onTimeUpdate={(event) => setDetailCurrentTime(event.currentTarget.currentTime)} onSeeked={(event) => setDetailCurrentTime(event.currentTarget.currentTime)}><track kind="captions" src="data:text/vtt,WEBVTT" srcLang="en" label="Instrumental audio" /></audio><button className="remove-copy" onClick={removeSelectedAudioCopy}>Remove local copy</button></> : <button className="audio-empty" onClick={() => attachRef.current?.click()}><span>＋</span> Attach an audio bounce</button>}<input ref={attachRef} className="sr-only" type="file" accept="audio/*,.wav,.aif,.aiff,.mp3,.m4a,.flac" onChange={attachAudio} />{selectedSharing}<div className="detail-section"><div className="detail-section-head"><span>NEXT ACTION</span><button onClick={openEdit}>edit</button></div><p className="next-action">→ {selected.nextAction || "No next action set"}</p></div><div className="detail-section"><div className="detail-section-head"><span>NOTES</span><button onClick={openEdit}>edit</button></div><p>{selected.note || "No notes yet."}</p></div><div className="detail-section"><div className="detail-section-head"><span>PROJECT</span><button onClick={openEdit}>change</button></div><div className="assigned-project"><span className="project-dot coral" />{selected.project}<span>↗</span></div></div><button className="open-demo" onClick={openEdit}>Edit demo <span>↗</span></button></aside>}
           </div></>}
           <div className="bottom-note"><span className="spark">✳</span><span><strong>{revisitDemos.length} demos in the review queue.</strong> Sorted by oldest update.</span><button onClick={() => { setView("revisit"); setProject("All demos"); }}>Open revisit queue →</button></div>
         </div>

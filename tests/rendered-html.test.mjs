@@ -106,6 +106,12 @@ test("keeps local data out of version control", async () => {
   assert.match(page, /key === "arrowup" \|\| key === "k"/);
   assert.match(page, /onEnded=\{advanceRapid\}/);
   assert.match(page, /onPointerDown=\{beginTimedNoteRange\}/);
+  assert.match(page, /waveformPeaks/);
+  assert.match(page, /annotation-waveform/);
+  assert.match(page, /rapidActiveNoteUuids/);
+  assert.match(page, /editTimedNote\(note\)/);
+  assert.match(page, /deleteTimedNote\(note\)/);
+  assert.match(page, /Update timed note/);
   assert.match(page, /Save timed note/);
   assert.match(page, /timedNotes/);
   assert.doesNotMatch(page, /localStorage\.setItem\(STORAGE_KEY/);
