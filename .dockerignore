@@ -1,0 +1,12 @@
+.git
+.next
+.wrangler
+data
+dist
+node_modules
+.env
+.env.*
+!.env.server.example
+backups
+*.log
+tsconfig.tsbuildinfo

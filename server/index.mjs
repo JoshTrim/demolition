@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createReadStream, createWriteStream, existsSync } from "node:fs";
 import { mkdir, rename, stat, statfs, unlink } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -15,6 +15,7 @@ import {
 
 const port = Number(process.env.DEMOLITION_API_PORT || 3001);
 const host = process.env.DEMOLITION_API_HOST || "127.0.0.1";
+const proxyToken = process.env.DEMOLITION_PROXY_TOKEN || "";
 
 function corsHeaders(req) {
   const origin = req.headers.origin;
@@ -63,6 +64,13 @@ function requirePeer(req) {
 function isLocalRequest(req) {
   const address = req.socket.remoteAddress || "";
   return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
+}
+
+function isTrustedProxyRequest(req) {
+  if (!proxyToken) return false;
+  const supplied = Buffer.from(String(req.headers["x-demolition-proxy-token"] || ""));
+  const expected = Buffer.from(proxyToken);
+  return supplied.length === expected.length && timingSafeEqual(supplied, expected);
 }
 
 function safeFileName(value) {
@@ -180,7 +188,7 @@ const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url || "/", `http://${host}:${port}`);
     if (req.method === "OPTIONS") { res.writeHead(204, corsHeaders(req)); return res.end(); }
-    if (!url.pathname.startsWith("/api/peer/") && !isLocalRequest(req)) return sendJson(req, res, 403, { error: "This endpoint is available only on the local machine" });
+    if (!url.pathname.startsWith("/api/peer/") && !isLocalRequest(req) && !isTrustedProxyRequest(req)) return sendJson(req, res, 403, { error: "This endpoint is available only through the owner gateway" });
     if (req.method === "GET" && url.pathname === "/api/health") return sendJson(req, res, 200, { ok: true, database: "sqlite", peerSync: true });
     if (req.method === "GET" && url.pathname === "/api/state") return sendJson(req, res, 200, readWorkspace());
     if (req.method === "PUT" && url.pathname === "/api/state") {

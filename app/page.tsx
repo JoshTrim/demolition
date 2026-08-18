@@ -82,7 +82,8 @@ const initialDemos: Demo[] = [];
 const statusLabels: Record<Status, string> = { unheard: "Unheard", revisit: "Revisit", shaping: "Shaping", finished: "Finished" };
 
 function apiUrl(path: string) {
-  return `http://${window.location.hostname || "localhost"}:3001${path}`;
+  const localDevelopment = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") && window.location.port === "3000";
+  return localDevelopment ? `http://${window.location.hostname}:3001${path}` : path;
 }
 
 async function loadWorkspace() {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -89,6 +89,55 @@ test("pairs local identities and exchanges signed ratings", async () => {
     if (!firstState.listens.some((listen) => listen.authorName === "Blair" && listen.verdict === "down" && listen.signature) || !firstState.timedNotes.some((note) => note.authorName === "Blair" && note.note === "Try a shorter fill" && note.signature)) process.exit(1);
   `;
   await run(process.execPath, ["--input-type=module", "-e", script], { cwd: temporaryDirectory });
+});
+
+test("restores a copied SQLite library and managed audio directory", async () => {
+  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "demolition-restore-test-"));
+  const sourceDirectory = path.join(temporaryDirectory, "source");
+  const restoredDirectory = path.join(temporaryDirectory, "restored");
+  await Promise.all([mkdir(sourceDirectory), mkdir(restoredDirectory)]);
+  const databaseModule = new URL("../server/database.mjs", import.meta.url).href;
+  const createScript = `
+    import { writeFile } from "node:fs/promises";
+    process.chdir(${JSON.stringify(sourceDirectory)});
+    const database = await import(${JSON.stringify(databaseModule)} + "?backup-source=" + Date.now());
+    const account = database.getAccount();
+    database.writeWorkspace({
+      projects: [], tags: [], orders: {}, media: [], listens: [], timedNotes: [], shares: [],
+      demos: [{ id: 42, uuid: "restore-demo", ownerId: account.id, title: "Restore Me", bpm: 100, key: "A", duration: "00:10", status: "unheard", tags: [], note: "", nextAction: "", project: "Unsorted", updatedAt: 1, audioName: "restore.wav", checksum: "test-checksum", fileSize: 5 }]
+    });
+    await writeFile(new URL("data/audio/42.wav", "file://" + process.cwd() + "/"), Buffer.from("audio"));
+    database.saveStoredFile("audio", 42, "42.wav", "restore.wav", "audio/wav", 5);
+  `;
+  await run(process.execPath, ["--input-type=module", "-e", createScript], { cwd: sourceDirectory });
+  await cp(path.join(sourceDirectory, "data"), path.join(restoredDirectory, "data"), { recursive: true });
+  const verifyScript = `
+    import { readFile } from "node:fs/promises";
+    process.chdir(${JSON.stringify(restoredDirectory)});
+    const database = await import(${JSON.stringify(databaseModule)} + "?backup-restore=" + Date.now());
+    const state = database.readWorkspace();
+    const stored = database.getStoredFile("audio", 42);
+    const audio = await readFile(new URL("data/audio/42.wav", "file://" + process.cwd() + "/"), "utf8");
+    if (state.demos[0]?.uuid !== "restore-demo" || stored?.original_name !== "restore.wav" || audio !== "audio") process.exit(1);
+  `;
+  await run(process.execPath, ["--input-type=module", "-e", verifyScript], { cwd: restoredDirectory });
+});
+
+test("ships a WireGuard-bound owner gateway", async () => {
+  const [compose, caddy, server, page, dockerfile] = await Promise.all([
+    readFile(new URL("../compose.yaml", import.meta.url), "utf8"),
+    readFile(new URL("../deploy/Caddyfile", import.meta.url), "utf8"),
+    readFile(new URL("../server/index.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../Dockerfile", import.meta.url), "utf8"),
+  ]);
+  assert.match(compose, /DEMOLITION_WIREGUARD_IP/);
+  assert.match(compose, /DEMOLITION_PROXY_TOKEN/);
+  assert.match(caddy, /X-Demolition-Proxy-Token/);
+  assert.match(caddy, /tls internal/);
+  assert.match(server, /isTrustedProxyRequest/);
+  assert.match(page, /localDevelopment[\s\S]*: path/);
+  assert.match(dockerfile, /node:22-bookworm-slim/);
 });
 
 test("keeps local data out of version control", async () => {
