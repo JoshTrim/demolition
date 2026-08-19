@@ -23,11 +23,10 @@ if [[ ${#DEMOLITION_PROXY_TOKEN} -lt 32 || "$DEMOLITION_PROXY_TOKEN" == replace-
 fi
 
 data_dir=${DEMOLITION_DATA_DIR:-/srv/demolition/data}
-caddy_data_dir=${DEMOLITION_CADDY_DATA_DIR:-/srv/demolition/caddy-data}
 uid=${DEMOLITION_UID:-1000}
 gid=${DEMOLITION_GID:-1000}
 
-mkdir -p "$data_dir" "$caddy_data_dir"
+mkdir -p "$data_dir"
 if [[ $EUID -eq 0 ]]; then
   chown -R "$uid:$gid" "$data_dir"
 elif [[ ! -w "$data_dir" ]]; then

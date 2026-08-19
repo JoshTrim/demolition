@@ -55,6 +55,6 @@ npm test
 
 ## Debian home server
 
-Demolition includes a Docker Compose deployment for a Debian server reached through WireGuard. Caddy provides the private HTTPS owner gateway, while direct peer traffic remains restricted to authenticated `/api/peer/*` routes.
+Demolition includes a Docker Compose deployment for a Debian server reached through WireGuard. It exposes loopback-only UI and API upstreams for your existing reverse proxy, while direct peer traffic remains restricted to authenticated `/api/peer/*` routes on the WireGuard address.
 
-See [docs/debian-server.md](docs/debian-server.md) for migration, certificate, firewall, backup, restore, and update instructions. Nothing in this deployment requires public hosting or router port forwarding.
+See [docs/debian-server.md](docs/debian-server.md) for migration, reverse-proxy, firewall, backup, restore, and update instructions. Nothing in this deployment requires public hosting or router port forwarding.

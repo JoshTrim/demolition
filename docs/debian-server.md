@@ -4,14 +4,13 @@ This deployment keeps Demolition private behind an existing WireGuard network. I
 
 ## Architecture
 
-- Caddy listens only on the Debian server's WireGuard address at port 443.
-- Browser requests to `/` go to the Demolition interface.
-- Browser requests to `/api/*` go to the SQLite API with a private proxy token added by Caddy.
-- Port 3001 is bound only to the WireGuard address for authenticated peer sync.
-- The normal owner API rejects direct remote requests that did not pass through Caddy.
+- Demolition's interface is available to a host-managed reverse proxy at `127.0.0.1:3000`.
+- Its API is available to the reverse proxy at `127.0.0.1:3001`.
+- Port 3001 is also bound to the WireGuard address for authenticated peer sync.
+- The normal owner API rejects remote requests that do not include the configured private proxy token.
 - SQLite, managed audio, moodboard media, the owner identity, and signing keys live in `/srv/demolition/data`.
 
-Do not forward ports 443, 3000, or 3001 from the internet-facing router.
+TLS, hostnames, and public or private ingress are managed outside this repository. Do not forward ports 3000 or 3001 from the internet-facing router.
 
 ## 1. Prepare Debian
 
@@ -25,14 +24,12 @@ docker --version
 docker compose version
 ```
 
-Choose a private hostname such as `demolition.home.arpa`. Add it to local DNS, or add an entry on each owner device that maps the hostname to the Debian server's WireGuard address.
-
 ## 2. Install the application source
 
 ```bash
-sudo mkdir -p /opt/demolition /srv/demolition/data /srv/demolition/caddy-data /srv/demolition/backups
+sudo mkdir -p /opt/demolition /srv/demolition/data /srv/demolition/backups
 sudo chown -R "$USER":"$USER" /opt/demolition /srv/demolition
-git clone YOUR_REPOSITORY_URL /opt/demolition
+gh repo clone JoshTrim/demolition /opt/demolition
 cd /opt/demolition
 cp .env.server.example .env.server
 ```
@@ -47,9 +44,7 @@ Edit `.env.server`:
 
 ```dotenv
 DEMOLITION_WIREGUARD_IP=10.8.0.2
-DEMOLITION_HOSTNAME=demolition.home.arpa
 DEMOLITION_DATA_DIR=/srv/demolition/data
-DEMOLITION_CADDY_DATA_DIR=/srv/demolition/caddy-data
 DEMOLITION_PROXY_TOKEN=PASTE_THE_GENERATED_TOKEN
 DEMOLITION_UID=1000
 DEMOLITION_GID=1000
@@ -91,39 +86,45 @@ cd /opt/demolition
 ./scripts/server-up.sh
 ```
 
-The script validates the environment, builds the image, starts both services, and shows their health. Open:
-
-```text
-https://demolition.home.arpa
-```
-
-The services bind only to the configured WireGuard address. Confirm this on Debian:
+The script validates the environment, builds the image, starts Demolition, and shows its health. Confirm the bindings on Debian:
 
 ```bash
-ss -lnt | grep -E ':(443|3001)\b'
+ss -lnt | grep -E ':(3000|3001)\b'
 docker compose --env-file .env.server ps
 ```
 
-## 5. Trust Caddy's private certificate
+Expected bindings are:
 
-Caddy uses a persistent internal certificate authority because the hostname is private. Export its root certificate:
+- `127.0.0.1:3000` for the browser interface.
+- `127.0.0.1:3001` for API requests from the host reverse proxy.
+- `WIREGUARD_IP:3001` for authenticated peer sync.
 
-```bash
-cd /opt/demolition
-docker compose --env-file .env.server cp caddy:/data/caddy/pki/authorities/local/root.crt ./demolition-root.crt
+## 5. Connect your reverse proxy
+
+Configure the reverse proxy you already manage with these upstream rules:
+
+- Forward `/api/*` to `http://127.0.0.1:3001` without stripping the `/api` prefix.
+- Add `X-Demolition-Proxy-Token` to API requests, using the exact `DEMOLITION_PROXY_TOKEN` value from `.env.server`.
+- Forward all other requests to `http://127.0.0.1:3000`.
+- Preserve normal forwarding headers and WebSocket support.
+
+The proxy token is what allows owner-level API requests through the reverse proxy. Do not expose it to browsers, commit it, or place it in a client-visible configuration file.
+
+For example, the routing contract is:
+
+```text
+/api/*  -> 127.0.0.1:3001 + X-Demolition-Proxy-Token
+/*      -> 127.0.0.1:3000
 ```
-
-Install `demolition-root.crt` as a trusted root certificate on each owner device. Do not distribute the CA private key from `/srv/demolition/caddy-data`.
 
 ## 6. Configure WireGuard and firewall policy
 
-Only owner devices should reach the Caddy address on TCP 443. Friend instances may later reach TCP 3001, but only over WireGuard; Demolition still requires pairing tokens and signed events on peer routes.
+Friend instances may reach TCP 3001 only over WireGuard; Demolition still requires pairing tokens and signed events on peer routes. Access to your separately managed reverse proxy is outside the Demolition Compose stack.
 
 Keep these rules true regardless of whether Debian uses nftables, UFW, or another firewall manager:
 
-- Allow TCP 443 on `wg0` from owner WireGuard addresses.
 - Allow TCP 3001 on `wg0` only from paired friend addresses when friend sync is needed.
-- Do not allow TCP 3000 from any external interface.
+- Keep TCP 3000 loopback-only.
 - Do not allow TCP 3001 from the LAN or internet-facing interface.
 - Do not add router port forwarding.
 
@@ -145,7 +146,7 @@ Keep the Mac copy offline and unchanged until these checks pass.
 
 ## Backups
 
-Create a consistent snapshot. The script briefly stops both containers so SQLite, its WAL, audio, and the Caddy certificate authority are copied together:
+Create a consistent snapshot. The script briefly stops Demolition so SQLite, its WAL, audio, and media are copied together:
 
 ```bash
 cd /opt/demolition

@@ -123,18 +123,18 @@ test("restores a copied SQLite library and managed audio directory", async () =>
   await run(process.execPath, ["--input-type=module", "-e", verifyScript], { cwd: restoredDirectory });
 });
 
-test("ships a WireGuard-bound owner gateway", async () => {
-  const [compose, caddy, server, page, dockerfile] = await Promise.all([
+test("ships reverse-proxy upstreams and a WireGuard-bound peer API", async () => {
+  const [compose, server, page, dockerfile] = await Promise.all([
     readFile(new URL("../compose.yaml", import.meta.url), "utf8"),
-    readFile(new URL("../deploy/Caddyfile", import.meta.url), "utf8"),
     readFile(new URL("../server/index.mjs", import.meta.url), "utf8"),
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../Dockerfile", import.meta.url), "utf8"),
   ]);
   assert.match(compose, /DEMOLITION_WIREGUARD_IP/);
   assert.match(compose, /DEMOLITION_PROXY_TOKEN/);
-  assert.match(caddy, /X-Demolition-Proxy-Token/);
-  assert.match(caddy, /tls internal/);
+  assert.match(compose, /127\.0\.0\.1:3000:3000/);
+  assert.match(compose, /127\.0\.0\.1:3001:3001/);
+  assert.doesNotMatch(compose, /caddy:/);
   assert.match(server, /isTrustedProxyRequest/);
   assert.match(page, /localDevelopment[\s\S]*: path/);
   assert.match(dockerfile, /node:22-bookworm-slim/);

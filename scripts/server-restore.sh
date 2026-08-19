@@ -15,7 +15,6 @@ source "$env_file"
 set +a
 
 data_dir=${DEMOLITION_DATA_DIR:-/srv/demolition/data}
-caddy_data_dir=${DEMOLITION_CADDY_DATA_DIR:-/srv/demolition/caddy-data}
 uid=${DEMOLITION_UID:-1000}
 gid=${DEMOLITION_GID:-1000}
 rollback_root="${data_dir%/}-before-restore-$(date -u +%Y%m%dT%H%M%SZ)"
@@ -35,7 +34,7 @@ restart_services() {
 trap restart_services EXIT
 
 if [[ -d "$data_dir" ]]; then mv "$data_dir" "$rollback_root"; fi
-mkdir -p "$data_dir" "$caddy_data_dir"
+mkdir -p "$data_dir"
 
 if ! rsync -a --delete "$snapshot/data/" "$data_dir/"; then
   failed_restore="${data_dir%/}-failed-$(date -u +%Y%m%dT%H%M%SZ)"
@@ -47,7 +46,6 @@ if ! rsync -a --delete "$snapshot/data/" "$data_dir/"; then
   exit 1
 fi
 
-if [[ -d "$snapshot/caddy-data" ]]; then rsync -a --delete "$snapshot/caddy-data/" "$caddy_data_dir/"; fi
 chown -R "$uid:$gid" "$data_dir"
 restart_services
 trap - EXIT

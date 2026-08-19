@@ -14,13 +14,12 @@ source "$env_file"
 set +a
 
 data_dir=${DEMOLITION_DATA_DIR:-/srv/demolition/data}
-caddy_data_dir=${DEMOLITION_CADDY_DATA_DIR:-/srv/demolition/caddy-data}
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
 mkdir -p "$backup_root"
 backup_root=$(cd "$backup_root" && pwd)
 snapshot="$backup_root/$stamp"
 
-mkdir -p "$snapshot/data" "$snapshot/caddy-data"
+mkdir -p "$snapshot/data"
 cd "$repo_dir"
 
 started=false
@@ -34,7 +33,6 @@ trap restart_services EXIT
 
 docker compose --env-file "$env_file" stop
 rsync -a --delete "$data_dir/" "$snapshot/data/"
-rsync -a --delete "$caddy_data_dir/" "$snapshot/caddy-data/"
 date -u +%FT%TZ > "$snapshot/created-at.txt"
 if command -v sha256sum >/dev/null && [[ -f "$snapshot/data/demolition.sqlite" ]]; then
   sha256sum "$snapshot/data/demolition.sqlite" > "$snapshot/demolition.sqlite.sha256"
