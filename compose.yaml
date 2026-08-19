@@ -9,10 +9,12 @@ services:
     user: "${DEMOLITION_UID:-1000}:${DEMOLITION_GID:-1000}"
     environment:
       DEMOLITION_API_HOST: 0.0.0.0
+      DEMOLITION_DATABASE_PATH: /app/database/demolition.sqlite
       DEMOLITION_PROXY_TOKEN: ${DEMOLITION_PROXY_TOKEN:?Set DEMOLITION_PROXY_TOKEN in .env}
       TZ: ${TZ:-Australia/Brisbane}
     volumes:
       - ${DEMOLITION_DATA_DIR:-/srv/demolition/data}:/app/data
+      - ${DEMOLITION_DATABASE_DIR:?Set DEMOLITION_DATABASE_DIR in .env}:/app/database
     expose:
       - "3000"
       - "3001"

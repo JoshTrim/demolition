@@ -7,7 +7,7 @@ import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import {
   acceptPairing, audioDirectory, authenticatePeer, buildSyncPackage, canFriendAccessAudio,
-  createPairingInvite, dataDirectory, decodePairingInvite, demoByUuid, friendWithSecrets,
+  createPairingInvite, databasePath, dataDirectory, decodePairingInvite, demoByUuid, friendWithSecrets,
   getAccount, getStoredFile, markFriendSyncError, markPeerAudioStored, mediaDirectory,
   mergeSyncPackage, readWorkspace, removeFriend, removeStoredFile, saveStoredFile,
   storedFileBytes, updateAccount, upsertFriend, writeWorkspace,
@@ -222,7 +222,7 @@ const server = createServer(async (req, res) => {
     }
     if (req.method === "GET" && url.pathname === "/api/storage") {
       const filesystem = await statfs(dataDirectory);
-      const usage = storedFileBytes() + (await stat(path.join(dataDirectory, "demolition.sqlite"))).size;
+      const usage = storedFileBytes() + (await stat(databasePath)).size;
       return sendJson(req, res, 200, {
         usage, quota: Number(filesystem.bavail) * Number(filesystem.bsize) + usage, persisted: true,
       });

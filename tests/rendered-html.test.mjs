@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { cp, mkdir, mkdtemp, readFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -36,6 +36,7 @@ test("server-renders the Demolition workspace", async () => {
 
 test("uses the local SQLite and managed-file backend", async () => {
   const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "demolition-db-test-"));
+  const databasePath = path.join(temporaryDirectory, "database", "demolition.sqlite");
   const databaseModule = new URL("../server/database.mjs", import.meta.url).href;
   const script = `
     const database = await import(${JSON.stringify(databaseModule)} + "?test=" + Date.now());
@@ -50,7 +51,11 @@ test("uses the local SQLite and managed-file backend", async () => {
     const state = database.readWorkspace();
     if (state.projects[0].name !== "Album" || state.tags[0].name !== "test" || state.demos[0].creationDate !== "2019-04-12" || state.demos[0].uuid !== "demo-one" || state.orders.Album[0] !== 1 || state.listens[0].verdict !== "up" || state.listens[0].note !== "Strong chorus" || state.listens[0].authorId !== account.id || !state.listens[0].signature || state.timedNotes[0].endSeconds !== 18.5 || !state.timedNotes[0].signature) process.exit(1);
   `;
-  await run(process.execPath, ["--input-type=module", "-e", script], { cwd: temporaryDirectory });
+  await run(process.execPath, ["--input-type=module", "-e", script], {
+    cwd: temporaryDirectory,
+    env: { ...process.env, DEMOLITION_DATABASE_PATH: databasePath },
+  });
+  assert.equal((await stat(databasePath)).isFile(), true);
 });
 
 test("pairs local identities and exchanges signed ratings", async () => {
@@ -131,6 +136,8 @@ test("ships reverse-proxy upstreams and a WireGuard-bound peer API", async () =>
     readFile(new URL("../Dockerfile", import.meta.url), "utf8"),
   ]);
   assert.match(compose, /DEMOLITION_WIREGUARD_IP/);
+  assert.match(compose, /DEMOLITION_DATABASE_DIR/);
+  assert.match(compose, /DEMOLITION_DATABASE_PATH: \/app\/database\/demolition\.sqlite/);
   assert.match(compose, /DEMOLITION_PROXY_TOKEN/);
   assert.match(compose, /127\.0\.0\.1:\$\{DEMOLITION_UI_PORT/);
   assert.match(compose, /127\.0\.0\.1:\$\{DEMOLITION_API_PORT/);

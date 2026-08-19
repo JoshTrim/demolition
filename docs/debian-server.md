@@ -8,7 +8,8 @@ This deployment keeps Demolition private behind an existing WireGuard network. I
 - Its API is available to the reverse proxy at `127.0.0.1:DEMOLITION_API_PORT`.
 - `DEMOLITION_API_PORT` is also bound to the WireGuard address for authenticated peer sync.
 - The normal owner API rejects remote requests that do not include the configured private proxy token.
-- SQLite, managed audio, moodboard media, the owner identity, and signing keys live in `/srv/demolition/data`.
+- SQLite, the owner identity, and signing keys live in the local `DEMOLITION_DATABASE_DIR`.
+- Managed audio and moodboard media live in `DEMOLITION_DATA_DIR`, which may be a TrueNAS or other bulk-storage mount.
 
 TLS, hostnames, and public or private ingress are managed outside this repository. Do not forward the configured UI or API ports from the internet-facing router.
 
@@ -27,8 +28,8 @@ docker compose version
 ## 2. Install the application source
 
 ```bash
-sudo mkdir -p /opt/demolition /srv/demolition/data /srv/demolition/backups
-sudo chown -R "$USER":"$USER" /opt/demolition /srv/demolition
+sudo mkdir -p /opt/demolition /srv/demolition/data /var/lib/demolition/database /srv/demolition/backups
+sudo chown -R "$USER":"$USER" /opt/demolition /srv/demolition /var/lib/demolition
 gh repo clone JoshTrim/demolition /opt/demolition
 cd /opt/demolition
 cp .env.example .env
@@ -47,23 +48,26 @@ DEMOLITION_WIREGUARD_IP=10.8.0.2
 DEMOLITION_UI_PORT=3000
 DEMOLITION_API_PORT=3001
 DEMOLITION_DATA_DIR=/srv/demolition/data
+DEMOLITION_DATABASE_DIR=/var/lib/demolition/database
 DEMOLITION_PROXY_TOKEN=PASTE_THE_GENERATED_TOKEN
 DEMOLITION_UID=1000
 DEMOLITION_GID=1000
 TZ=Australia/Brisbane
 ```
 
-Use the numeric owner of `/srv/demolition/data` for `DEMOLITION_UID` and `DEMOLITION_GID`:
+Use the numeric owner of the data and database directories for `DEMOLITION_UID` and `DEMOLITION_GID`:
 
 ```bash
 stat -c '%u %g' /srv/demolition/data
+stat -c '%u %g' /var/lib/demolition/database
+findmnt -T /var/lib/demolition/database -o TARGET,SOURCE,FSTYPE,OPTIONS
 ```
 
-Keep `.env` private. It is excluded from Git.
+The database directory must be on a local Linux filesystem, not NFS, SMB, or CIFS. Keep `.env` private; it is excluded from Git.
 
 ## 3. Transfer the existing library
 
-The current library is approximately 7.4 GB. The complete `data/` directory must move together because it contains the database, audio, media, identity, signing key, and peer state.
+The current library is approximately 7.4 GB. Transfer the complete legacy `data/` directory first so the database, audio, media, identity, signing key, and peer state arrive together.
 
 On the Mac, stop the running Demolition process. Then, from the repository:
 
@@ -80,6 +84,23 @@ sudo chown -R 1000:1000 /srv/demolition/data
 ```
 
 Use the UID and GID configured in `.env` if they differ from `1000:1000`.
+
+Before the first server start, copy the SQLite database and any WAL onto the local filesystem. Leave the original files on bulk storage until migration is verified, and do not copy the transient `demolition.sqlite-shm` file:
+
+```bash
+cd /opt/demolition
+set -a
+source .env
+set +a
+sudo mkdir -p "$DEMOLITION_DATABASE_DIR"
+sudo cp -a "$DEMOLITION_DATA_DIR/demolition.sqlite" "$DEMOLITION_DATABASE_DIR/"
+if [[ -f "$DEMOLITION_DATA_DIR/demolition.sqlite-wal" ]]; then
+  sudo cp -a "$DEMOLITION_DATA_DIR/demolition.sqlite-wal" "$DEMOLITION_DATABASE_DIR/"
+fi
+sudo chown -R "$DEMOLITION_UID:$DEMOLITION_GID" "$DEMOLITION_DATABASE_DIR"
+```
+
+SQLite will rebuild its shared-memory file locally and recover committed WAL contents when Demolition starts.
 
 ## 4. Start Demolition
 
@@ -148,7 +169,7 @@ Keep the Mac copy offline and unchanged until these checks pass.
 
 ## Backups
 
-Create a consistent snapshot. The script briefly stops Demolition so SQLite, its WAL, audio, and media are copied together:
+Create a consistent snapshot. The script briefly stops Demolition and copies both the local database directory and bulk media directory into one snapshot:
 
 ```bash
 cd /opt/demolition

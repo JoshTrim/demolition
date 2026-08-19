@@ -6,11 +6,13 @@ import { DatabaseSync } from "node:sqlite";
 export const dataDirectory = path.resolve(process.cwd(), "data");
 export const audioDirectory = path.join(dataDirectory, "audio");
 export const mediaDirectory = path.join(dataDirectory, "media");
+export const databasePath = path.resolve(process.env.DEMOLITION_DATABASE_PATH || path.join(dataDirectory, "demolition.sqlite"));
 
 mkdirSync(audioDirectory, { recursive: true });
 mkdirSync(mediaDirectory, { recursive: true });
+mkdirSync(path.dirname(databasePath), { recursive: true });
 
-const database = new DatabaseSync(path.join(dataDirectory, "demolition.sqlite"));
+const database = new DatabaseSync(databasePath);
 database.exec("PRAGMA foreign_keys = ON");
 database.exec("PRAGMA journal_mode = WAL");
 database.exec("PRAGMA synchronous = NORMAL");

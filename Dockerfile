@@ -15,6 +15,6 @@ COPY --from=build --chown=node:node /app /app
 
 USER node
 EXPOSE 3000 3001
-VOLUME ["/app/data"]
+VOLUME ["/app/data", "/app/database"]
 
 CMD ["npm", "run", "start"]

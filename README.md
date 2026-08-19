@@ -6,11 +6,13 @@ A local workspace for cataloguing music demos, assembling project tracklists, an
 
 Demolition does not require external hosting or cloud storage.
 
-- Project and demo metadata is stored in `data/demolition.sqlite`.
+- Project and demo metadata is stored in `data/demolition.sqlite` during local development.
 - Imported audio copies are stored in `data/audio/`.
 - Imported moodboard files are stored in `data/media/`.
 - The entire `data/` directory is excluded from Git.
 - Imported source files are read-only inputs. Demolition works with its own copies.
+
+The Docker deployment keeps SQLite in the local path configured by `DEMOLITION_DATABASE_DIR`; `DEMOLITION_DATA_DIR` can point to separate bulk storage for audio and moodboard files.
 
 When upgrading from the earlier browser-storage version, existing browser metadata and files are copied into the local backend automatically on first load. The old browser data is retained as a fallback.
 
