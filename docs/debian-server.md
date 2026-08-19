@@ -85,10 +85,10 @@ Use the UID and GID configured in `.env` if they differ from `1000:1000`.
 
 ```bash
 cd /opt/demolition
-./scripts/server-up.sh
+docker compose up -d --build
 ```
 
-The script validates the environment, builds the image, starts Demolition, and shows its health. Confirm the bindings on Debian:
+Docker Compose reads `.env` automatically, builds the image, and starts Demolition. Confirm the bindings on Debian:
 
 ```bash
 ss -lnt
@@ -177,7 +177,7 @@ Snapshots on the same disk do not protect against disk failure. Replicate `/srv/
 ```bash
 cd /opt/demolition
 git pull --ff-only
-./scripts/server-up.sh
+docker compose up -d --build
 ```
 
 Run a backup before updating. Database upgrades happen when the application starts, so retain the pre-update snapshot for rollback.

@@ -57,4 +57,10 @@ npm test
 
 Demolition includes a Docker Compose deployment for a Debian server reached through WireGuard. It exposes loopback-only UI and API upstreams for your existing reverse proxy, while direct peer traffic remains restricted to authenticated `/api/peer/*` routes on the WireGuard address.
 
+After copying `.env.example` to `.env`, start or update it with the standard Compose command:
+
+```bash
+docker compose up -d --build
+```
+
 See [docs/debian-server.md](docs/debian-server.md) for migration, reverse-proxy, firewall, backup, restore, and update instructions. Nothing in this deployment requires public hosting or router port forwarding.
