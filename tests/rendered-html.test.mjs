@@ -139,6 +139,8 @@ test("ships reverse-proxy upstreams and a WireGuard-bound peer API", async () =>
   assert.match(compose, /DEMOLITION_DATABASE_DIR/);
   assert.match(compose, /DEMOLITION_DATABASE_PATH: \/app\/database\/demolition\.sqlite/);
   assert.match(compose, /DEMOLITION_PROXY_TOKEN/);
+  assert.match(compose, /DEMOLITION_PROXY_NETWORK/);
+  assert.match(compose, /external: true/);
   assert.match(compose, /127\.0\.0\.1:\$\{DEMOLITION_UI_PORT/);
   assert.match(compose, /127\.0\.0\.1:\$\{DEMOLITION_API_PORT/);
   assert.match(compose, /DEMOLITION_WIREGUARD_IP[\s\S]*DEMOLITION_API_PORT/);

@@ -4,8 +4,8 @@ This deployment keeps Demolition private behind an existing WireGuard network. I
 
 ## Architecture
 
-- Demolition's interface is available to a host-managed reverse proxy at `127.0.0.1:DEMOLITION_UI_PORT`.
-- Its API is available to the reverse proxy at `127.0.0.1:DEMOLITION_API_PORT`.
+- A containerized reverse proxy reaches the interface and API through the shared `DEMOLITION_PROXY_NETWORK` as `demolition:3000` and `demolition:3001`.
+- Loopback bindings remain available at `127.0.0.1:DEMOLITION_UI_PORT` and `127.0.0.1:DEMOLITION_API_PORT` for host diagnostics or a host-native proxy.
 - `DEMOLITION_API_PORT` is also bound to the WireGuard address for authenticated peer sync.
 - The normal owner API rejects remote requests that do not include the configured private proxy token.
 - SQLite, the owner identity, and signing keys live in the local `DEMOLITION_DATABASE_DIR`.
@@ -47,6 +47,7 @@ Edit `.env`:
 DEMOLITION_WIREGUARD_IP=10.8.0.2
 DEMOLITION_UI_PORT=3000
 DEMOLITION_API_PORT=3001
+DEMOLITION_PROXY_NETWORK=caddy
 DEMOLITION_DATA_DIR=/srv/demolition/data
 DEMOLITION_DATABASE_DIR=/var/lib/demolition/database
 DEMOLITION_PROXY_TOKEN=PASTE_THE_GENERATED_TOKEN
@@ -124,20 +125,28 @@ Expected bindings are:
 
 ## 5. Connect your reverse proxy
 
-Configure the reverse proxy you already manage with these upstream rules:
+Set `DEMOLITION_PROXY_NETWORK` to an existing external Docker network shared by the reverse proxy. For a Caddy container on the `caddy` network, use this Caddyfile block:
 
-- Forward `/api/*` to `http://127.0.0.1:DEMOLITION_API_PORT` without stripping the `/api` prefix.
-- Add `X-Demolition-Proxy-Token` to API requests, using the exact `DEMOLITION_PROXY_TOKEN` value from `.env`.
-- Forward all other requests to `http://127.0.0.1:DEMOLITION_UI_PORT`.
-- Preserve normal forwarding headers and WebSocket support.
+```caddyfile
+demolition.cirrus.ink {
+	@api path /api /api/*
+	reverse_proxy @api demolition:3001 {
+		header_up X-Demolition-Proxy-Token {$DEMOLITION_PROXY_TOKEN}
+	}
+
+	reverse_proxy demolition:3000
+}
+```
+
+These are the container's internal ports. `DEMOLITION_UI_PORT` and `DEMOLITION_API_PORT` configure host bindings and do not apply to traffic across the shared Docker network. A host-native reverse proxy should instead use the configured `127.0.0.1` ports.
 
 The proxy token is what allows owner-level API requests through the reverse proxy. Do not expose it to browsers, commit it, or place it in a client-visible configuration file.
 
-For example, the routing contract is:
+The container routing contract is:
 
 ```text
-/api/*  -> 127.0.0.1:DEMOLITION_API_PORT + X-Demolition-Proxy-Token
-/*      -> 127.0.0.1:DEMOLITION_UI_PORT
+/api/*  -> demolition:3001 + X-Demolition-Proxy-Token
+/*      -> demolition:3000
 ```
 
 ## 6. Configure WireGuard and firewall policy
