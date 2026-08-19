@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-env_file=${DEMOLITION_ENV_FILE:-"$repo_dir/.env.server"}
+env_file=${DEMOLITION_ENV_FILE:-"$repo_dir/.env"}
 backup_root=${1:-/srv/demolition/backups}
 
 [[ -f "$env_file" ]] || { echo "Missing $env_file" >&2; exit 1; }

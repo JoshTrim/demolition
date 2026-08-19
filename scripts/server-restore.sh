@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-env_file=${DEMOLITION_ENV_FILE:-"$repo_dir/.env.server"}
+env_file=${DEMOLITION_ENV_FILE:-"$repo_dir/.env"}
 snapshot=${1:-}
 
 [[ -n "$snapshot" && -d "$snapshot/data" ]] || { echo "Usage: $0 /srv/demolition/backups/TIMESTAMP" >&2; exit 1; }

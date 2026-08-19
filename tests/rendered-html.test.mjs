@@ -132,8 +132,9 @@ test("ships reverse-proxy upstreams and a WireGuard-bound peer API", async () =>
   ]);
   assert.match(compose, /DEMOLITION_WIREGUARD_IP/);
   assert.match(compose, /DEMOLITION_PROXY_TOKEN/);
-  assert.match(compose, /127\.0\.0\.1:3000:3000/);
-  assert.match(compose, /127\.0\.0\.1:3001:3001/);
+  assert.match(compose, /127\.0\.0\.1:\$\{DEMOLITION_UI_PORT/);
+  assert.match(compose, /127\.0\.0\.1:\$\{DEMOLITION_API_PORT/);
+  assert.match(compose, /DEMOLITION_WIREGUARD_IP[\s\S]*DEMOLITION_API_PORT/);
   assert.doesNotMatch(compose, /caddy:/);
   assert.match(server, /isTrustedProxyRequest/);
   assert.match(page, /localDevelopment[\s\S]*: path/);

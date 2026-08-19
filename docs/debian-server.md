@@ -4,13 +4,13 @@ This deployment keeps Demolition private behind an existing WireGuard network. I
 
 ## Architecture
 
-- Demolition's interface is available to a host-managed reverse proxy at `127.0.0.1:3000`.
-- Its API is available to the reverse proxy at `127.0.0.1:3001`.
-- Port 3001 is also bound to the WireGuard address for authenticated peer sync.
+- Demolition's interface is available to a host-managed reverse proxy at `127.0.0.1:DEMOLITION_UI_PORT`.
+- Its API is available to the reverse proxy at `127.0.0.1:DEMOLITION_API_PORT`.
+- `DEMOLITION_API_PORT` is also bound to the WireGuard address for authenticated peer sync.
 - The normal owner API rejects remote requests that do not include the configured private proxy token.
 - SQLite, managed audio, moodboard media, the owner identity, and signing keys live in `/srv/demolition/data`.
 
-TLS, hostnames, and public or private ingress are managed outside this repository. Do not forward ports 3000 or 3001 from the internet-facing router.
+TLS, hostnames, and public or private ingress are managed outside this repository. Do not forward the configured UI or API ports from the internet-facing router.
 
 ## 1. Prepare Debian
 
@@ -31,7 +31,7 @@ sudo mkdir -p /opt/demolition /srv/demolition/data /srv/demolition/backups
 sudo chown -R "$USER":"$USER" /opt/demolition /srv/demolition
 gh repo clone JoshTrim/demolition /opt/demolition
 cd /opt/demolition
-cp .env.server.example .env.server
+cp .env.example .env
 ```
 
 Create a proxy token:
@@ -40,10 +40,12 @@ Create a proxy token:
 openssl rand -hex 32
 ```
 
-Edit `.env.server`:
+Edit `.env`:
 
 ```dotenv
 DEMOLITION_WIREGUARD_IP=10.8.0.2
+DEMOLITION_UI_PORT=3000
+DEMOLITION_API_PORT=3001
 DEMOLITION_DATA_DIR=/srv/demolition/data
 DEMOLITION_PROXY_TOKEN=PASTE_THE_GENERATED_TOKEN
 DEMOLITION_UID=1000
@@ -57,7 +59,7 @@ Use the numeric owner of `/srv/demolition/data` for `DEMOLITION_UID` and `DEMOLI
 stat -c '%u %g' /srv/demolition/data
 ```
 
-Keep `.env.server` private. It is excluded from Git.
+Keep `.env` private. It is excluded from Git.
 
 ## 3. Transfer the existing library
 
@@ -77,7 +79,7 @@ On Debian, ensure the container user owns the transferred files:
 sudo chown -R 1000:1000 /srv/demolition/data
 ```
 
-Use the UID and GID configured in `.env.server` if they differ from `1000:1000`.
+Use the UID and GID configured in `.env` if they differ from `1000:1000`.
 
 ## 4. Start Demolition
 
@@ -89,23 +91,23 @@ cd /opt/demolition
 The script validates the environment, builds the image, starts Demolition, and shows its health. Confirm the bindings on Debian:
 
 ```bash
-ss -lnt | grep -E ':(3000|3001)\b'
-docker compose --env-file .env.server ps
+ss -lnt
+docker compose ps
 ```
 
 Expected bindings are:
 
-- `127.0.0.1:3000` for the browser interface.
-- `127.0.0.1:3001` for API requests from the host reverse proxy.
-- `WIREGUARD_IP:3001` for authenticated peer sync.
+- `127.0.0.1:DEMOLITION_UI_PORT` for the browser interface.
+- `127.0.0.1:DEMOLITION_API_PORT` for API requests from the host reverse proxy.
+- `WIREGUARD_IP:DEMOLITION_API_PORT` for authenticated peer sync.
 
 ## 5. Connect your reverse proxy
 
 Configure the reverse proxy you already manage with these upstream rules:
 
-- Forward `/api/*` to `http://127.0.0.1:3001` without stripping the `/api` prefix.
-- Add `X-Demolition-Proxy-Token` to API requests, using the exact `DEMOLITION_PROXY_TOKEN` value from `.env.server`.
-- Forward all other requests to `http://127.0.0.1:3000`.
+- Forward `/api/*` to `http://127.0.0.1:DEMOLITION_API_PORT` without stripping the `/api` prefix.
+- Add `X-Demolition-Proxy-Token` to API requests, using the exact `DEMOLITION_PROXY_TOKEN` value from `.env`.
+- Forward all other requests to `http://127.0.0.1:DEMOLITION_UI_PORT`.
 - Preserve normal forwarding headers and WebSocket support.
 
 The proxy token is what allows owner-level API requests through the reverse proxy. Do not expose it to browsers, commit it, or place it in a client-visible configuration file.
@@ -113,22 +115,22 @@ The proxy token is what allows owner-level API requests through the reverse prox
 For example, the routing contract is:
 
 ```text
-/api/*  -> 127.0.0.1:3001 + X-Demolition-Proxy-Token
-/*      -> 127.0.0.1:3000
+/api/*  -> 127.0.0.1:DEMOLITION_API_PORT + X-Demolition-Proxy-Token
+/*      -> 127.0.0.1:DEMOLITION_UI_PORT
 ```
 
 ## 6. Configure WireGuard and firewall policy
 
-Friend instances may reach TCP 3001 only over WireGuard; Demolition still requires pairing tokens and signed events on peer routes. Access to your separately managed reverse proxy is outside the Demolition Compose stack.
+Friend instances may reach `DEMOLITION_API_PORT` only over WireGuard; Demolition still requires pairing tokens and signed events on peer routes. Access to your separately managed reverse proxy is outside the Demolition Compose stack.
 
 Keep these rules true regardless of whether Debian uses nftables, UFW, or another firewall manager:
 
-- Allow TCP 3001 on `wg0` only from paired friend addresses when friend sync is needed.
-- Keep TCP 3000 loopback-only.
-- Do not allow TCP 3001 from the LAN or internet-facing interface.
+- Allow `DEMOLITION_API_PORT` on `wg0` only from paired friend addresses when friend sync is needed.
+- Keep `DEMOLITION_UI_PORT` loopback-only.
+- Do not allow `DEMOLITION_API_PORT` from the LAN or internet-facing interface.
 - Do not add router port forwarding.
 
-After migration, set the instance's **Mesh VPN URL** under **Friends & sync** to the server's WireGuard URL, for example `http://10.8.0.2:3001`.
+After migration, set the instance's **Mesh VPN URL** under **Friends & sync** to the server's WireGuard URL and configured API port, for example `http://10.8.0.2:3001`.
 
 ## 7. Verify the migration
 
@@ -165,7 +167,7 @@ Restore requires typing `RESTORE` and moves the previous live data to a timestam
 A basic daily cron entry is:
 
 ```cron
-0 3 * * * cd /opt/demolition && DEMOLITION_ENV_FILE=/opt/demolition/.env.server ./scripts/server-backup.sh /srv/demolition/backups >> /var/log/demolition-backup.log 2>&1
+0 3 * * * cd /opt/demolition && ./scripts/server-backup.sh /srv/demolition/backups >> /var/log/demolition-backup.log 2>&1
 ```
 
 Snapshots on the same disk do not protect against disk failure. Replicate `/srv/demolition/backups` to another disk or machine.

@@ -9,7 +9,7 @@ services:
     user: "${DEMOLITION_UID:-1000}:${DEMOLITION_GID:-1000}"
     environment:
       DEMOLITION_API_HOST: 0.0.0.0
-      DEMOLITION_PROXY_TOKEN: ${DEMOLITION_PROXY_TOKEN:?Set DEMOLITION_PROXY_TOKEN in .env.server}
+      DEMOLITION_PROXY_TOKEN: ${DEMOLITION_PROXY_TOKEN:?Set DEMOLITION_PROXY_TOKEN in .env}
       TZ: ${TZ:-Australia/Brisbane}
     volumes:
       - ${DEMOLITION_DATA_DIR:-/srv/demolition/data}:/app/data
@@ -17,9 +17,9 @@ services:
       - "3000"
       - "3001"
     ports:
-      - "127.0.0.1:3000:3000/tcp"
-      - "127.0.0.1:3001:3001/tcp"
-      - "${DEMOLITION_WIREGUARD_IP:?Set DEMOLITION_WIREGUARD_IP in .env.server}:3001:3001/tcp"
+      - "127.0.0.1:${DEMOLITION_UI_PORT:?Set DEMOLITION_UI_PORT in .env}:3000/tcp"
+      - "127.0.0.1:${DEMOLITION_API_PORT:?Set DEMOLITION_API_PORT in .env}:3001/tcp"
+      - "${DEMOLITION_WIREGUARD_IP:?Set DEMOLITION_WIREGUARD_IP in .env}:${DEMOLITION_API_PORT:?Set DEMOLITION_API_PORT in .env}:3001/tcp"
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 30s
