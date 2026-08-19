@@ -170,6 +170,9 @@ test("keeps local data out of version control", async () => {
   assert.match(page, /Indexing existing demo/);
   assert.match(page, /uniqueFiles/);
   assert.match(page, /filenameKey/);
+  assert.match(page, /showConflictReview/);
+  assert.match(page, /deferFilenameConflicts/);
+  assert.match(page, /Review conflicts/);
   assert.match(page, /FILENAME CONFLICT/);
   assert.match(page, /Audition both versions/);
   assert.match(page, /resolveFilenameConflict\("existing"\)/);

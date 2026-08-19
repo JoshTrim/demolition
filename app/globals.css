@@ -260,6 +260,8 @@ button, input, select, textarea { font:inherit; } button { cursor:pointer; }
 .health-grid strong { margin-top:12px; color:#d9d5cc; font-size:11px; }
 .health-grid small { margin-top:6px; color:#7f7e75; font-size:8px; line-height:1.5; }
 .health-grid button { margin-top:auto; padding:6px 8px; color:#b8c89a; background:#2d3526; border:1px solid #44533a; border-radius:3px; font-size:8px; }
+.conflict-health { grid-column:1/-1; min-height:118px!important; }
+.conflict-health button { color:#d9c28a; background:#38301f; border-color:#5d4b2c; }
 .storage-result { min-height:38px; margin:12px 0 0; padding:9px 11px; display:flex; align-items:center; gap:9px; color:#aeb99b; background:#242a20; border:1px solid #3a4531; border-radius:4px; }
 .storage-result i { width:9px; height:9px; border:2px solid #536146; border-top-color:var(--lime); border-radius:50%; animation:bulk-spin .8s linear infinite; }
 .storage-result p { margin:0; font-size:8px; }
