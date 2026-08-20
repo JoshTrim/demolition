@@ -163,6 +163,8 @@ test("keeps local data out of version control", async () => {
   assert.match(page, /key === "arrowright" \|\| key === "l"/);
   assert.match(page, /key === "arrowdown" \|\| key === "j"/);
   assert.match(page, /key === "arrowup" \|\| key === "k"/);
+  assert.match(page, /aria-label="Skip without rating"/);
+  assert.match(page, />Skip <span>→<\/span>/);
   assert.match(page, /onEnded=\{advanceRapid\}/);
   assert.match(page, /onPointerDown=\{beginTimedNoteRange\}/);
   assert.match(page, /waveformPeaks/);
