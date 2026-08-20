@@ -40,6 +40,7 @@ database.exec(`
     note TEXT NOT NULL DEFAULT '',
     next_action TEXT NOT NULL DEFAULT '',
     rating INTEGER NOT NULL DEFAULT 0,
+    favorite INTEGER NOT NULL DEFAULT 0,
     project TEXT NOT NULL DEFAULT 'Unsorted',
     updated_at INTEGER NOT NULL,
     audio_name TEXT,
@@ -160,6 +161,7 @@ function addColumn(table, column, definition) {
 addColumn("demos", "uuid", "TEXT");
 addColumn("demos", "owner_id", "TEXT");
 addColumn("demos", "source_friend_id", "TEXT");
+addColumn("demos", "favorite", "INTEGER NOT NULL DEFAULT 0");
 addColumn("listens", "event_uuid", "TEXT");
 addColumn("listens", "demo_uuid", "TEXT");
 addColumn("listens", "author_id", "TEXT");
@@ -284,7 +286,7 @@ function mapDemo(row) {
     id: Number(row.id), uuid: row.uuid, ownerId: row.owner_id, sourceFriendId: row.source_friend_id ?? undefined,
     title: row.title, bpm: Number(row.bpm), key: row.musical_key, duration: row.duration,
     status: row.status, tags: JSON.parse(row.tags_json || "[]"), note: row.note,
-    nextAction: row.next_action, rating: Number(row.rating), project: row.project,
+    nextAction: row.next_action, rating: Number(row.rating), favorite: Boolean(row.favorite), project: row.project,
     updatedAt: Number(row.updated_at), audioName: row.audio_name ?? undefined,
     checksum: row.checksum ?? undefined, fileSize: row.file_size == null ? undefined : Number(row.file_size),
     copyVerifiedAt: row.copy_verified_at == null ? undefined : Number(row.copy_verified_at),
@@ -355,8 +357,8 @@ export function readWorkspace() {
 const insertProject = database.prepare("INSERT INTO projects (name, color, mood, position) VALUES (?, ?, ?, ?)");
 const insertTag = database.prepare("INSERT INTO tags (name, created_at) VALUES (?, ?)");
 const insertDemo = database.prepare(`
-  INSERT INTO demos (id, uuid, owner_id, source_friend_id, title, bpm, musical_key, duration, status, tags_json, note, next_action, rating, project, updated_at, audio_name, checksum, file_size, copy_verified_at, creation_date)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  INSERT INTO demos (id, uuid, owner_id, source_friend_id, title, bpm, musical_key, duration, status, tags_json, note, next_action, rating, favorite, project, updated_at, audio_name, checksum, file_size, copy_verified_at, creation_date)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 const insertTrack = database.prepare("INSERT INTO tracklist (project, demo_id, position) VALUES (?, ?, ?)");
 const insertMedia = database.prepare("INSERT INTO project_media (id, project, kind, source, title, note, file_name, url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
@@ -435,7 +437,7 @@ export function writeWorkspace(payload) {
     normalizedDemos.forEach((demo) => insertDemo.run(
       demo.id, demo.uuid, demo.ownerId, demo.sourceFriendId ?? null, demo.title, demo.bpm || 0, demo.key || "—",
       demo.duration || "00:00", demo.status, JSON.stringify(Array.isArray(demo.tags) ? demo.tags : []), demo.note ?? "",
-      demo.nextAction ?? "", demo.rating || 0, demo.project || "Unsorted", demo.updatedAt || Date.now(),
+      demo.nextAction ?? "", demo.rating || 0, demo.favorite ? 1 : 0, demo.project || "Unsorted", demo.updatedAt || Date.now(),
       demo.audioName ?? null, demo.checksum ?? null, demo.fileSize ?? null, demo.copyVerifiedAt ?? null, demo.creationDate ?? null,
     ));
     media.forEach((item) => insertMedia.run(item.id, item.project, item.kind, item.source, item.title, item.note ?? "", item.fileName ?? null, item.url ?? null, item.createdAt || Date.now()));
@@ -523,6 +525,7 @@ function syncDemo(row, friendId) {
   delete demo.project;
   delete demo.note;
   delete demo.nextAction;
+  delete demo.favorite;
   delete demo.sourceFriendId;
   return { ...demo, audioAvailable: Boolean(stored && share?.share_audio), audioMimeType: stored?.mime_type };
 }
@@ -566,7 +569,7 @@ export function mergeSyncPackage(friendId, payload) {
             checksum = ?, file_size = ?, creation_date = ?, source_friend_id = ? WHERE uuid = ?
         `).run(demo.title, demo.bpm || 0, demo.key || "—", demo.duration || "00:00", JSON.stringify(demo.tags ?? []), demo.updatedAt || Date.now(), demo.checksum ?? null, demo.fileSize ?? null, demo.creationDate ?? null, friend.id, demo.uuid);
       } else {
-        insertDemo.run(nextNumericId("demos"), demo.uuid, friend.id, friend.id, demo.title, demo.bpm || 0, demo.key || "—", demo.duration || "00:00", "unheard", JSON.stringify(demo.tags ?? []), "", "", 0, "Unsorted", demo.updatedAt || Date.now(), null, demo.checksum ?? null, demo.fileSize ?? null, null, demo.creationDate ?? null);
+        insertDemo.run(nextNumericId("demos"), demo.uuid, friend.id, friend.id, demo.title, demo.bpm || 0, demo.key || "—", demo.duration || "00:00", "unheard", JSON.stringify(demo.tags ?? []), "", "", 0, 0, "Unsorted", demo.updatedAt || Date.now(), null, demo.checksum ?? null, demo.fileSize ?? null, null, demo.creationDate ?? null);
       }
     }
     for (const listen of incomingListens) {
