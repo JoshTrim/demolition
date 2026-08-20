@@ -45,13 +45,13 @@ test("uses the local SQLite and managed-file backend", async () => {
     const account = database.getAccount();
     database.writeWorkspace({
       projects: [{ name: "Album", color: "blue", mood: "" }],
-      demos: [{ id: 1, uuid: "demo-one", ownerId: account.id, title: "Test 12.4.19", bpm: 120, key: "C", duration: "01:00", status: "unheard", tags: ["test"], note: "", nextAction: "", rating: 0, favorite: true, project: "Album", updatedAt: 1, creationDate: "2019-04-12" }],
+      demos: [{ id: 1, uuid: "demo-one", ownerId: account.id, title: "Test 12.4.19", bpm: 120, key: "C", duration: "01:00", status: "unheard", tags: ["test"], note: "", nextAction: "", rating: 0, favorite: true, project: "Album", updatedAt: 1, creationDate: "2019-04-12", trimStartSeconds: 4.5, trimEndSeconds: 52.25 }],
       orders: { Album: [1] }, media: [],
       shares: [], listens: [{ id: 2, eventUuid: "listen-one", demoId: 1, demoUuid: "demo-one", authorId: account.id, authorName: account.displayName, verdict: "up", note: "Strong chorus", listenedAt: 2 }],
       timedNotes: [{ id: 3, noteUuid: "note-one", demoId: 1, demoUuid: "demo-one", authorId: account.id, authorName: account.displayName, startSeconds: 10, endSeconds: 18.5, note: "Bass change", createdAt: 3 }]
     });
     const state = database.readWorkspace();
-    if (state.projects[0].name !== "Album" || state.tags[0].name !== "test" || state.demos[0].creationDate !== "2019-04-12" || state.demos[0].uuid !== "demo-one" || state.demos[0].favorite !== true || state.orders.Album[0] !== 1 || state.listens[0].verdict !== "up" || state.listens[0].note !== "Strong chorus" || state.listens[0].authorId !== account.id || !state.listens[0].signature || state.timedNotes[0].endSeconds !== 18.5 || !state.timedNotes[0].signature) process.exit(1);
+    if (state.projects[0].name !== "Album" || state.tags[0].name !== "test" || state.demos[0].creationDate !== "2019-04-12" || state.demos[0].uuid !== "demo-one" || state.demos[0].favorite !== true || state.demos[0].trimStartSeconds !== 4.5 || state.demos[0].trimEndSeconds !== 52.25 || state.orders.Album[0] !== 1 || state.listens[0].verdict !== "up" || state.listens[0].note !== "Strong chorus" || state.listens[0].authorId !== account.id || !state.listens[0].signature || state.timedNotes[0].endSeconds !== 18.5 || !state.timedNotes[0].signature) process.exit(1);
   `;
   await run(process.execPath, ["--input-type=module", "-e", script], {
     cwd: temporaryDirectory,
@@ -167,7 +167,11 @@ test("keeps local data out of version control", async () => {
   assert.match(page, /key === "arrowup" \|\| key === "k"/);
   assert.match(page, /aria-label="Skip without rating"/);
   assert.match(page, />Skip <span>→<\/span>/);
-  assert.match(page, /onEnded=\{advanceRapid\}/);
+  assert.match(page, /className="rapid-audio-engine"/);
+  assert.match(page, /handleRapidEnded/);
+  assert.match(page, /aria-label="Trim start"/);
+  assert.match(page, /aria-label="Trim end"/);
+  assert.doesNotMatch(page, /className="rapid-player"/);
   assert.match(page, /onPointerDown=\{beginTimedNoteRange\}/);
   assert.match(page, /waveformPeaks/);
   assert.match(page, /libraryAudioChecksums/);

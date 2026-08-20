@@ -26,6 +26,8 @@ type Demo = {
   fileSize?: number;
   copyVerifiedAt?: number;
   creationDate?: string;
+  trimStartSeconds?: number;
+  trimEndSeconds?: number;
 };
 type Project = { name: string; color: "coral" | "yellow" | "blue" | "violet"; mood?: string };
 type TagDefinition = { name: string; createdAt: number };
@@ -396,6 +398,9 @@ export default function Home() {
   const [rapidVoteEventUuid, setRapidVoteEventUuid] = useState<string>();
   const [rapidDuration, setRapidDuration] = useState(0);
   const [rapidCurrentTime, setRapidCurrentTime] = useState(0);
+  const [rapidPlaying, setRapidPlaying] = useState(false);
+  const [rapidFullPlaybackComplete, setRapidFullPlaybackComplete] = useState(false);
+  const [trimDraft, setTrimDraft] = useState<{ start: number; end: number }>();
   const [detailCurrentTime, setDetailCurrentTime] = useState(0);
   const [waveform, setWaveform] = useState<number[]>([]);
   const [timedNoteRange, setTimedNoteRange] = useState<{ start: number; end: number }>();
@@ -421,6 +426,8 @@ export default function Home() {
   const rapidAudioRef = useRef<HTMLAudioElement>(null);
   const annotationRailRef = useRef<HTMLDivElement>(null);
   const annotationDragStartRef = useRef<number | undefined>(undefined);
+  const trimDragRef = useRef<"start" | "end" | undefined>(undefined);
+  const rapidTrimPlaybackRef = useRef(false);
   const waveformCacheRef = useRef(new Map<string, number[]>());
   const rapidActionsRef = useRef({ previous: () => undefined, next: () => undefined, down: () => undefined, up: () => undefined });
   const activeFilenameConflict = pendingBulkImport?.conflicts[0];
@@ -536,6 +543,11 @@ export default function Home() {
     return () => window.clearTimeout(timeout);
   }, [demos, projects, tags, orders, media, listens, timedNotes, shares, ready]);
 
+  const selectedAudioDemo = demos.find((demo) => demo.id === selectedId);
+  const selectedAudioChecksum = selectedAudioDemo?.checksum;
+  const selectedAudioFileSize = selectedAudioDemo?.fileSize;
+  const selectedAudioName = selectedAudioDemo?.audioName;
+
   useEffect(() => {
     let currentUrl: string | undefined;
     let active = true;
@@ -544,8 +556,7 @@ export default function Home() {
         setDetailCurrentTime(0);
         currentUrl = URL.createObjectURL(blob);
         setAudioUrl(currentUrl);
-        const demo = demos.find((item) => item.id === selectedId);
-        const cacheKey = demo?.checksum || `${selectedId}:${blob.size}`;
+        const cacheKey = selectedAudioChecksum || `${selectedId}:${blob.size}`;
         const cached = waveformCacheRef.current.get(cacheKey);
         if (cached) setWaveform(cached);
         else {
@@ -563,10 +574,16 @@ export default function Home() {
       }
     }).catch(() => { if (active) setWaveform([]); });
     return () => { active = false; if (currentUrl) URL.revokeObjectURL(currentUrl); };
-  }, [selectedId, demos]);
+  }, [selectedId, selectedAudioChecksum, selectedAudioFileSize, selectedAudioName]);
 
   useEffect(() => {
-    if (rapidMode && audioUrl) rapidAudioRef.current?.play().catch(() => undefined);
+    const player = rapidAudioRef.current;
+    if (!rapidMode || !audioUrl || !player) return;
+    rapidTrimPlaybackRef.current = false;
+    setRapidFullPlaybackComplete(false);
+    setRapidPlaying(false);
+    player.currentTime = 0;
+    player.play().then(() => setRapidPlaying(true)).catch(() => undefined);
   }, [audioUrl, rapidMode]);
 
   useEffect(() => {
@@ -658,6 +675,8 @@ export default function Home() {
   const projectOrder = orders[project] ?? [];
   const projectCandidates = demos.filter((demo) => demo.project === project && !projectOrder.includes(demo.id));
   const rapidDemo = demos.find((demo) => demo.id === rapidIds[rapidIndex]);
+  const rapidTrim = trimBounds();
+  const rapidHasTrim = hasRapidTrim(rapidTrim);
   const selectedStats = selected ? statsFor(selected.id) : statsFor(0);
   const selectedListens = selected ? listens.filter((listen) => listen.demoId === selected.id).slice(0, 5) : [];
   const selectedTimedNotes = selected ? timedNotes.filter((note) => note.demoId === selected.id).sort((a, b) => a.startSeconds - b.startSeconds) : [];
@@ -676,7 +695,12 @@ export default function Home() {
     : <div className="detail-section remote-source"><div className="detail-section-head"><span>SHARED BY</span></div><p>{friends.find((friend) => friend.id === selected.ownerId)?.displayName || "Friend"}</p></div> : null;
   const rapidAnnotationTransport = audioUrl ? (
     <section className="annotation-transport">
-      <div className="annotation-head"><span>TIMED NOTES</span><small>Drag across the waveform to select a range</small></div>
+      <div className="transport-controls">
+        <button className="transport-play" onClick={toggleRapidPlayback} aria-label={rapidPlaying ? "Pause demo" : "Play demo"}>{rapidPlaying ? "Ⅱ" : "▶"}</button>
+        <div><span>PLAYBACK</span><small>{rapidFullPlaybackComplete && rapidHasTrim ? "Trimmed replay" : "Full track"}</small></div>
+        <strong>{formatDuration(rapidCurrentTime)} / {formatDuration(rapidDuration)}</strong>
+      </div>
+      <div className="annotation-head"><span>WAVEFORM &amp; TIMED NOTES</span><small>Drag the orange handles to trim · drag the waveform to add a note</small></div>
       <div
         ref={annotationRailRef}
         className={`annotation-rail ${rapidDuration ? "ready" : ""}`}
@@ -690,6 +714,13 @@ export default function Home() {
         <span className="annotation-waveform" aria-hidden="true">
           {waveform.map((peak, index) => <i key={index} style={{ height: `${Math.max(2, peak * 100)}%` }} />)}
         </span>
+        {rapidDuration > 0 && <>
+          <span className="trim-muted trim-muted-start" style={{ width: `${rapidTrim.start / rapidDuration * 100}%` }} />
+          <span className="trim-muted trim-muted-end" style={{ left: `${rapidTrim.end / rapidDuration * 100}%` }} />
+          <span className="trim-active-range" style={{ left: `${rapidTrim.start / rapidDuration * 100}%`, width: `${(rapidTrim.end - rapidTrim.start) / rapidDuration * 100}%` }} />
+          <button className="trim-handle trim-start" role="slider" aria-label="Trim start" aria-valuemin={0} aria-valuemax={rapidTrim.end} aria-valuenow={rapidTrim.start} aria-valuetext={formatDuration(rapidTrim.start)} style={{ left: `${rapidTrim.start / rapidDuration * 100}%` }} onPointerDown={(event) => beginTrimDrag("start", event)} onPointerMove={moveTrimDrag} onPointerUp={finishTrimDrag} onPointerCancel={() => { trimDragRef.current = undefined; }} onKeyDown={(event) => adjustTrimWithKeyboard("start", event)}><span>IN</span></button>
+          <button className="trim-handle trim-end" role="slider" aria-label="Trim end" aria-valuemin={rapidTrim.start} aria-valuemax={rapidDuration} aria-valuenow={rapidTrim.end} aria-valuetext={formatDuration(rapidTrim.end)} style={{ left: `${rapidTrim.end / rapidDuration * 100}%` }} onPointerDown={(event) => beginTrimDrag("end", event)} onPointerMove={moveTrimDrag} onPointerUp={finishTrimDrag} onPointerCancel={() => { trimDragRef.current = undefined; }} onKeyDown={(event) => adjustTrimWithKeyboard("end", event)}><span>OUT</span></button>
+        </>}
         {rapidTimedNotes.map((note) => <i
           key={note.noteUuid}
           className={`saved-range ${rapidActiveNoteUuids.has(note.noteUuid) ? "active" : ""}`}
@@ -704,7 +735,7 @@ export default function Home() {
           width: `${Math.max(0.7, (timedNoteRange.end - timedNoteRange.start) / rapidDuration * 100)}%`,
         }} />}
       </div>
-      <div className="annotation-times"><span>{formatDuration(rapidCurrentTime)}</span><span>{formatDuration(rapidDuration)}</span></div>
+      <div className="trim-readout"><span>IN <b>{formatDuration(rapidTrim.start)}</b></span>{rapidHasTrim && <button onClick={resetRapidTrim}>Reset trim</button>}<span>OUT <b>{formatDuration(rapidTrim.end)}</b></span></div>
       {timedNoteRange && <form className="timed-note-editor" onSubmit={saveTimedNote}>
         <div><b>{editingTimedNoteUuid ? "EDIT " : ""}{formatDuration(timedNoteRange.start)}–{formatDuration(timedNoteRange.end)}</b><button type="button" onClick={cancelTimedNoteEdit}>Cancel</button></div>
         <textarea value={timedNoteDraft} onChange={(event) => setTimedNoteDraft(event.target.value)} rows={2} placeholder="What applies to this section?" />
@@ -1141,10 +1172,139 @@ export default function Home() {
     setRapidVoteEventUuid(undefined);
     setRapidCurrentTime(0);
     setRapidDuration(0);
+    setRapidPlaying(false);
+    setRapidFullPlaybackComplete(false);
+    setTrimDraft(undefined);
     setTimedNoteRange(undefined);
     setTimedNoteDraft("");
     setEditingTimedNoteUuid(undefined);
     annotationDragStartRef.current = undefined;
+    trimDragRef.current = undefined;
+    rapidTrimPlaybackRef.current = false;
+  }
+
+  function trimBounds(duration = rapidDuration, draft = trimDraft) {
+    const start = Math.max(0, Math.min(draft?.start ?? rapidDemo?.trimStartSeconds ?? 0, Math.max(0, duration - 0.5)));
+    const end = Math.max(start + Math.min(0.5, duration), Math.min(draft?.end ?? rapidDemo?.trimEndSeconds ?? duration, duration));
+    return { start, end };
+  }
+
+  function hasRapidTrim(bounds = trimBounds()) {
+    return rapidDuration > 0 && (bounds.start > 0.01 || bounds.end < rapidDuration - 0.01);
+  }
+
+  function handleRapidLoadedMetadata(player: HTMLAudioElement) {
+    const duration = player.duration || 0;
+    setRapidDuration(duration);
+    setTrimDraft(trimBounds(duration, {
+      start: rapidDemo?.trimStartSeconds ?? 0,
+      end: rapidDemo?.trimEndSeconds ?? duration,
+    }));
+  }
+
+  function handleRapidTimeUpdate(player: HTMLAudioElement) {
+    const currentTime = player.currentTime;
+    const bounds = trimBounds();
+    if (rapidTrimPlaybackRef.current && hasRapidTrim(bounds) && currentTime >= bounds.end) {
+      player.pause();
+      player.currentTime = bounds.start;
+      rapidTrimPlaybackRef.current = false;
+      setRapidCurrentTime(bounds.start);
+      setRapidPlaying(false);
+      return;
+    }
+    setRapidCurrentTime(currentTime);
+  }
+
+  function handleRapidEnded(player: HTMLAudioElement) {
+    const bounds = trimBounds();
+    rapidTrimPlaybackRef.current = false;
+    setRapidPlaying(false);
+    setRapidFullPlaybackComplete(true);
+    player.currentTime = hasRapidTrim(bounds) ? bounds.start : 0;
+    setRapidCurrentTime(player.currentTime);
+  }
+
+  function toggleRapidPlayback() {
+    const player = rapidAudioRef.current;
+    if (!player) return;
+    if (!player.paused) {
+      player.pause();
+      setRapidPlaying(false);
+      return;
+    }
+    const bounds = trimBounds();
+    if (rapidFullPlaybackComplete) {
+      const shouldTrim = hasRapidTrim(bounds);
+      rapidTrimPlaybackRef.current = shouldTrim;
+      if (shouldTrim && (player.currentTime < bounds.start || player.currentTime >= bounds.end - 0.05)) player.currentTime = bounds.start;
+      else if (!shouldTrim && player.currentTime >= rapidDuration - 0.05) player.currentTime = 0;
+    } else {
+      rapidTrimPlaybackRef.current = false;
+    }
+    player.play().then(() => setRapidPlaying(true)).catch(() => undefined);
+  }
+
+  function trimRangeAt(kind: "start" | "end", seconds: number) {
+    const current = trimBounds();
+    return kind === "start"
+      ? { start: Math.max(0, Math.min(seconds, current.end - 0.5)), end: current.end }
+      : { start: current.start, end: Math.min(rapidDuration, Math.max(seconds, current.start + 0.5)) };
+  }
+
+  function beginTrimDrag(kind: "start" | "end", event: React.PointerEvent<HTMLButtonElement>) {
+    if (!rapidDuration || event.button !== 0) return;
+    event.stopPropagation();
+    trimDragRef.current = kind;
+    setTrimDraft(trimRangeAt(kind, annotationSeconds(event.clientX)));
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function moveTrimDrag(event: React.PointerEvent<HTMLButtonElement>) {
+    const kind = trimDragRef.current;
+    if (!kind) return;
+    event.stopPropagation();
+    setTrimDraft(trimRangeAt(kind, annotationSeconds(event.clientX)));
+  }
+
+  function persistRapidTrim(range: { start: number; end: number }) {
+    if (!rapidDemo || !rapidDuration) return;
+    const isFullRange = range.start <= 0.01 && range.end >= rapidDuration - 0.01;
+    setDemos((current) => current.map((demo) => demo.id === rapidDemo.id ? {
+      ...demo,
+      trimStartSeconds: isFullRange ? undefined : range.start,
+      trimEndSeconds: isFullRange ? undefined : range.end,
+    } : demo));
+  }
+
+  function finishTrimDrag(event: React.PointerEvent<HTMLButtonElement>) {
+    const kind = trimDragRef.current;
+    if (!kind) return;
+    event.stopPropagation();
+    const range = trimRangeAt(kind, annotationSeconds(event.clientX));
+    setTrimDraft(range);
+    persistRapidTrim(range);
+    trimDragRef.current = undefined;
+    event.currentTarget.releasePointerCapture(event.pointerId);
+  }
+
+  function adjustTrimWithKeyboard(kind: "start" | "end", event: React.KeyboardEvent<HTMLButtonElement>) {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    event.stopPropagation();
+    const current = trimBounds();
+    const seconds = current[kind] + (event.key === "ArrowRight" ? 0.5 : -0.5);
+    const range = trimRangeAt(kind, seconds);
+    setTrimDraft(range);
+    persistRapidTrim(range);
+  }
+
+  function resetRapidTrim() {
+    if (!rapidDemo || !rapidDuration) return;
+    const range = { start: 0, end: rapidDuration };
+    setTrimDraft(range);
+    persistRapidTrim(range);
+    rapidTrimPlaybackRef.current = false;
   }
 
   function annotationSeconds(clientX: number) {
@@ -1619,7 +1779,7 @@ export default function Home() {
         </div>
       </section>
 
-      {rapidMode && rapidDemo && <div className="rapid-backdrop"><section className="rapid-session" aria-label="Listen mode"><header><div><span className="eyebrow">LISTEN MODE</span><strong>{rapidIndex + 1} / {rapidIds.length}</strong></div><button onClick={() => setRapidMode(false)} aria-label="End listen mode">×</button></header><div className="rapid-body"><div className={`rapid-art cover-${rapidDemo.id % 4}`}><span>✳</span></div><div className="rapid-main"><div className="rapid-title"><div><h2>{rapidDemo.title}</h2><p>{rapidDemo.bpm ? `${rapidDemo.bpm} BPM` : "BPM unknown"} · {rapidDemo.key} · {rapidDemo.duration}</p></div><div className="rapid-title-actions"><button className={`favorite-button ${rapidDemo.favorite ? "active" : ""}`} aria-pressed={rapidDemo.favorite} onClick={() => toggleFavorite(rapidDemo.id)}>{rapidDemo.favorite ? "★ Favourite" : "☆ Favourite"}</button><select aria-label="Assign project" value={rapidDemo.project} onChange={(event) => changeRapidProject(event.target.value)}>{projectNames.map((name) => <option key={name}>{name}</option>)}</select></div></div>{audioUrl ? <audio ref={rapidAudioRef} className="rapid-player" src={audioUrl} controls onEnded={advanceRapid} onLoadedMetadata={(event) => setRapidDuration(event.currentTarget.duration || 0)} onDurationChange={(event) => setRapidDuration(event.currentTarget.duration || 0)} onTimeUpdate={(event) => setRapidCurrentTime(event.currentTarget.currentTime)} preload="metadata"><track kind="captions" src="data:text/vtt,WEBVTT" srcLang="en" label="Demo audio" /></audio> : <div className="rapid-no-audio">No local audio copy attached</div>}{rapidAnnotationTransport}<div className="rapid-vote-summary"><span>{rapidStats.up} up</span><span>{rapidStats.down} down</span><strong>Score {rapidStats.score > 0 ? `+${rapidStats.score}` : rapidStats.score}</strong></div><label className="rapid-note">Note for this listen<textarea value={rapidNote} onChange={(event) => updateRapidNote(event.target.value)} rows={3} placeholder="Optional note saved with your vote" /></label></div></div><footer><div className="rapid-controls"><button className="rapid-previous" disabled={!rapidIndex} onClick={previousRapid}><span>←</span> Previous <kbd>H</kbd></button><button className="thumb-down" aria-pressed={rapidDownSelected} onClick={() => recordListen("down")}><span>↓</span> Thumbs down <kbd>J</kbd></button><button className="thumb-up" aria-pressed={rapidUpSelected} onClick={() => recordListen("up")}><span>↑</span> Thumbs up <kbd>K</kbd></button><button className="rapid-next-track" aria-label="Skip without rating" onClick={advanceRapid}>Skip <span>→</span> <kbd>L</kbd></button></div></footer></section></div>}
+      {rapidMode && rapidDemo && <div className="rapid-backdrop"><section className="rapid-session" aria-label="Listen mode"><header><div><span className="eyebrow">LISTEN MODE</span><strong>{rapidIndex + 1} / {rapidIds.length}</strong></div><button onClick={() => setRapidMode(false)} aria-label="End listen mode">×</button></header><div className="rapid-body"><div className={`rapid-art cover-${rapidDemo.id % 4}`}><span>✳</span></div><div className="rapid-main"><div className="rapid-title"><div><h2>{rapidDemo.title}</h2><p>{rapidDemo.bpm ? `${rapidDemo.bpm} BPM` : "BPM unknown"} · {rapidDemo.key} · {rapidDemo.duration}</p></div><div className="rapid-title-actions"><button className={`favorite-button ${rapidDemo.favorite ? "active" : ""}`} aria-pressed={rapidDemo.favorite} onClick={() => toggleFavorite(rapidDemo.id)}>{rapidDemo.favorite ? "★ Favourite" : "☆ Favourite"}</button><select aria-label="Assign project" value={rapidDemo.project} onChange={(event) => changeRapidProject(event.target.value)}>{projectNames.map((name) => <option key={name}>{name}</option>)}</select></div></div>{audioUrl ? <audio ref={rapidAudioRef} className="rapid-audio-engine" src={audioUrl} onEnded={(event) => handleRapidEnded(event.currentTarget)} onLoadedMetadata={(event) => handleRapidLoadedMetadata(event.currentTarget)} onDurationChange={(event) => handleRapidLoadedMetadata(event.currentTarget)} onPlay={() => setRapidPlaying(true)} onPause={() => setRapidPlaying(false)} onTimeUpdate={(event) => handleRapidTimeUpdate(event.currentTarget)} preload="metadata"><track kind="captions" src="data:text/vtt,WEBVTT" srcLang="en" label="Demo audio" /></audio> : <div className="rapid-no-audio">No local audio copy attached</div>}{rapidAnnotationTransport}<div className="rapid-vote-summary"><span>{rapidStats.up} up</span><span>{rapidStats.down} down</span><strong>Score {rapidStats.score > 0 ? `+${rapidStats.score}` : rapidStats.score}</strong></div><label className="rapid-note">Note for this listen<textarea value={rapidNote} onChange={(event) => updateRapidNote(event.target.value)} rows={3} placeholder="Optional note saved with your vote" /></label></div></div><footer><div className="rapid-controls"><button className="rapid-previous" disabled={!rapidIndex} onClick={previousRapid}><span>←</span> Previous <kbd>H</kbd></button><button className="thumb-down" aria-pressed={rapidDownSelected} onClick={() => recordListen("down")}><span>↓</span> Thumbs down <kbd>J</kbd></button><button className="thumb-up" aria-pressed={rapidUpSelected} onClick={() => recordListen("up")}><span>↑</span> Thumbs up <kbd>K</kbd></button><button className="rapid-next-track" aria-label="Skip without rating" onClick={advanceRapid}>Skip <span>→</span> <kbd>L</kbd></button></div></footer></section></div>}
 
       {showAccount && account && <div className="modal-backdrop"><section className="modal mesh-modal" aria-label="Friends and sync"><button type="button" className="modal-close" onClick={() => setShowAccount(false)}>×</button><div className="eyebrow">LOCAL IDENTITY</div><h2>Friends &amp; sync</h2><form className="account-form" onSubmit={saveAccount}><div className="modal-fields"><label>Display name<input name="displayName" defaultValue={account.displayName} required /></label><label>Mesh VPN URL<input name="peerUrl" type="url" defaultValue={account.peerUrl} placeholder="http://100.64.0.10:3001" required /></label></div><span className="field-hint">Use this machine&apos;s stable VPN address. Start the server with DEMOLITION_API_HOST set to 0.0.0.0 so friends can reach it.</span><button className="secondary-button" type="submit">Save identity</button></form><div className="mesh-grid"><section><div className="detail-section-head"><span>INVITE A FRIEND</span></div><p>Create a single-use code and send it through a channel you trust.</p><button className="secondary-button" onClick={createInvite}>Create invitation</button>{pairingCode && <div className="invite-code"><textarea readOnly value={pairingCode} rows={4} aria-label="Pairing invitation code" /><button onClick={() => navigator.clipboard.writeText(pairingCode).then(() => setMeshProgress("Invitation copied."))}>Copy</button></div>}</section><section><div className="detail-section-head"><span>JOIN A FRIEND</span></div><form onSubmit={pairFriend}><textarea name="code" rows={4} placeholder="Paste their invitation code" aria-label="Friend invitation code" required /><button className="secondary-button" type="submit">Pair instance</button></form></section></div><div className="friend-list"><div className="detail-section-head"><span>CONNECTED FRIENDS</span><small>{friends.length}</small></div>{friends.map((friend) => <article key={friend.id}><span className={`peer-status ${friend.status}`} /><div><strong>{friend.displayName}</strong><small>{friend.peerUrl}</small><small>{friend.lastSyncedAt ? `Last synced ${relativeDate(friend.lastSyncedAt)}` : "Not synced yet"}</small></div><button onClick={() => syncFriend(friend)}>Sync now</button><button className="disconnect-peer" onClick={() => disconnectFriend(friend)} aria-label={`Disconnect ${friend.displayName}`}>×</button></article>)}{friends.length === 0 && <div className="friend-empty">No friends connected.</div>}</div>{meshProgress && <div className="mesh-progress" role="status">{meshProgress}</div>}<div className="mesh-security">Peer traffic stays on the VPN. Demolition also requires a separate pairing token and verifies signed rating events.</div></section></div>}
 

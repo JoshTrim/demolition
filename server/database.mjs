@@ -48,6 +48,8 @@ database.exec(`
     file_size INTEGER,
     copy_verified_at INTEGER,
     creation_date TEXT,
+    trim_start_seconds REAL,
+    trim_end_seconds REAL,
     uuid TEXT,
     owner_id TEXT,
     source_friend_id TEXT
@@ -162,6 +164,8 @@ addColumn("demos", "uuid", "TEXT");
 addColumn("demos", "owner_id", "TEXT");
 addColumn("demos", "source_friend_id", "TEXT");
 addColumn("demos", "favorite", "INTEGER NOT NULL DEFAULT 0");
+addColumn("demos", "trim_start_seconds", "REAL");
+addColumn("demos", "trim_end_seconds", "REAL");
 addColumn("listens", "event_uuid", "TEXT");
 addColumn("listens", "demo_uuid", "TEXT");
 addColumn("listens", "author_id", "TEXT");
@@ -291,6 +295,8 @@ function mapDemo(row) {
     checksum: row.checksum ?? undefined, fileSize: row.file_size == null ? undefined : Number(row.file_size),
     copyVerifiedAt: row.copy_verified_at == null ? undefined : Number(row.copy_verified_at),
     creationDate: row.creation_date ?? undefined,
+    trimStartSeconds: row.trim_start_seconds == null ? undefined : Number(row.trim_start_seconds),
+    trimEndSeconds: row.trim_end_seconds == null ? undefined : Number(row.trim_end_seconds),
   };
 }
 
@@ -357,8 +363,8 @@ export function readWorkspace() {
 const insertProject = database.prepare("INSERT INTO projects (name, color, mood, position) VALUES (?, ?, ?, ?)");
 const insertTag = database.prepare("INSERT INTO tags (name, created_at) VALUES (?, ?)");
 const insertDemo = database.prepare(`
-  INSERT INTO demos (id, uuid, owner_id, source_friend_id, title, bpm, musical_key, duration, status, tags_json, note, next_action, rating, favorite, project, updated_at, audio_name, checksum, file_size, copy_verified_at, creation_date)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  INSERT INTO demos (id, uuid, owner_id, source_friend_id, title, bpm, musical_key, duration, status, tags_json, note, next_action, rating, favorite, project, updated_at, audio_name, checksum, file_size, copy_verified_at, creation_date, trim_start_seconds, trim_end_seconds)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 const insertTrack = database.prepare("INSERT INTO tracklist (project, demo_id, position) VALUES (?, ?, ?)");
 const insertMedia = database.prepare("INSERT INTO project_media (id, project, kind, source, title, note, file_name, url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
@@ -439,6 +445,7 @@ export function writeWorkspace(payload) {
       demo.duration || "00:00", demo.status, JSON.stringify(Array.isArray(demo.tags) ? demo.tags : []), demo.note ?? "",
       demo.nextAction ?? "", demo.rating || 0, demo.favorite ? 1 : 0, demo.project || "Unsorted", demo.updatedAt || Date.now(),
       demo.audioName ?? null, demo.checksum ?? null, demo.fileSize ?? null, demo.copyVerifiedAt ?? null, demo.creationDate ?? null,
+      demo.trimStartSeconds ?? null, demo.trimEndSeconds ?? null,
     ));
     media.forEach((item) => insertMedia.run(item.id, item.project, item.kind, item.source, item.title, item.note ?? "", item.fileName ?? null, item.url ?? null, item.createdAt || Date.now()));
     listens.forEach((input) => {
@@ -566,10 +573,10 @@ export function mergeSyncPackage(friendId, payload) {
       if (existing) {
         database.prepare(`
           UPDATE demos SET title = ?, bpm = ?, musical_key = ?, duration = ?, tags_json = ?, updated_at = ?,
-            checksum = ?, file_size = ?, creation_date = ?, source_friend_id = ? WHERE uuid = ?
-        `).run(demo.title, demo.bpm || 0, demo.key || "—", demo.duration || "00:00", JSON.stringify(demo.tags ?? []), demo.updatedAt || Date.now(), demo.checksum ?? null, demo.fileSize ?? null, demo.creationDate ?? null, friend.id, demo.uuid);
+            checksum = ?, file_size = ?, creation_date = ?, trim_start_seconds = ?, trim_end_seconds = ?, source_friend_id = ? WHERE uuid = ?
+        `).run(demo.title, demo.bpm || 0, demo.key || "—", demo.duration || "00:00", JSON.stringify(demo.tags ?? []), demo.updatedAt || Date.now(), demo.checksum ?? null, demo.fileSize ?? null, demo.creationDate ?? null, demo.trimStartSeconds ?? null, demo.trimEndSeconds ?? null, friend.id, demo.uuid);
       } else {
-        insertDemo.run(nextNumericId("demos"), demo.uuid, friend.id, friend.id, demo.title, demo.bpm || 0, demo.key || "—", demo.duration || "00:00", "unheard", JSON.stringify(demo.tags ?? []), "", "", 0, 0, "Unsorted", demo.updatedAt || Date.now(), null, demo.checksum ?? null, demo.fileSize ?? null, null, demo.creationDate ?? null);
+        insertDemo.run(nextNumericId("demos"), demo.uuid, friend.id, friend.id, demo.title, demo.bpm || 0, demo.key || "—", demo.duration || "00:00", "unheard", JSON.stringify(demo.tags ?? []), "", "", 0, 0, "Unsorted", demo.updatedAt || Date.now(), null, demo.checksum ?? null, demo.fileSize ?? null, null, demo.creationDate ?? null, demo.trimStartSeconds ?? null, demo.trimEndSeconds ?? null);
       }
     }
     for (const listen of incomingListens) {
