@@ -172,6 +172,9 @@ test("keeps local data out of version control", async () => {
   assert.match(page, /aria-label="Trim start"/);
   assert.match(page, /aria-label="Trim end"/);
   assert.doesNotMatch(page, /className="rapid-player"/);
+  assert.doesNotMatch(page, /className=\{`rapid-art/);
+  assert.match(page, /className="rapid-tags"/);
+  assert.match(page, /createAndApplyRapidTag/);
   assert.match(page, /onPointerDown=\{beginTimedNoteRange\}/);
   assert.match(page, /waveformPeaks/);
   assert.match(page, /libraryAudioChecksums/);
