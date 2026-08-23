@@ -1012,6 +1012,48 @@ button,input,select,textarea,.project-tabs button b,.date-tag { border-radius:va
 .friend-list>.detail-section-head>div { display:flex; align-items:center; gap:8px; }
 .friend-list>.detail-section-head>div>button { min-height:30px; padding:5px 8px; color:var(--px-accent-2); border:1px solid var(--px-accent-2); background:var(--px-bg-deep); font:8px var(--px-font-display); }
 .friend-list button:disabled { cursor:not-allowed; opacity:.52; }
+
+/* Friend feedback inbox */
+.feedback-page { min-width:0; }
+.feedback-summary { margin-bottom:14px; display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; }
+.feedback-summary>div { min-height:104px; padding:16px 18px; position:relative; overflow:hidden; border:1px solid var(--px-border); background:linear-gradient(145deg,var(--px-surface-raised),var(--px-surface)); box-shadow:var(--px-hard-shadow); }
+.feedback-summary>div::before { content:""; position:absolute; inset:0 auto auto 0; width:28px; height:3px; background:var(--px-accent-2); }
+.feedback-summary>div:first-child::before { background:var(--px-accent); }
+.feedback-summary strong { display:block; margin-top:14px; color:var(--px-text); font:21px var(--px-font-display); text-shadow:3px 3px 0 var(--px-shadow); }
+.feedback-toolbar { min-height:52px; margin-bottom:12px; padding:8px 12px; display:flex; align-items:center; justify-content:space-between; gap:12px; border:1px solid var(--px-border); background:var(--px-surface); box-shadow:inset 3px 3px 0 rgb(0 0 0 / .25); }
+.feedback-toolbar>span { color:var(--px-text-muted); font-size:8px; }
+.feedback-filters { display:flex; gap:6px; }
+.feedback-filters button { min-height:34px; padding:6px 10px; color:var(--px-text-muted); border:1px solid var(--px-border); background:var(--px-bg-deep); font:8px var(--px-font-display); }
+.feedback-filters button:hover,.feedback-filters button.active { color:var(--px-text); border-color:var(--px-accent); background:color-mix(in srgb,var(--px-accent),var(--px-bg-deep) 86%); box-shadow:inset 3px 0 0 var(--px-accent); }
+.feedback-list { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+.feedback-card { min-width:0; border:1px solid var(--px-border); background:linear-gradient(145deg,var(--px-surface-raised),var(--px-surface)); box-shadow:var(--px-hard-shadow); }
+.feedback-card:hover { border-color:var(--px-border-strong); transform:translate(-1px,-1px); }
+.feedback-author { min-height:55px; padding:10px 12px; display:grid; grid-template-columns:34px minmax(0,1fr) auto; align-items:center; gap:9px; border-bottom:1px solid var(--px-border); background:rgb(0 0 0 / .1); }
+.feedback-author>span { width:32px; height:32px; display:grid; place-items:center; color:var(--px-bg-deep); border:1px solid var(--px-accent-2); background:var(--px-accent-2); font:8px var(--px-font-display); box-shadow:2px 2px 0 var(--px-shadow); }
+.feedback-author>div { min-width:0; display:flex; flex-direction:column; gap:4px; }
+.feedback-author strong { overflow:hidden; color:var(--px-text); font-size:10px; text-overflow:ellipsis; white-space:nowrap; }
+.feedback-author small { color:var(--px-accent-2); font:7px var(--px-font-display); }
+.feedback-author time { color:var(--px-text-muted); font-size:8px; }
+.feedback-content { min-height:122px; padding:16px; display:grid; grid-template-columns:36px minmax(0,1fr); align-items:start; gap:12px; }
+.feedback-content>b { width:34px; height:34px; display:grid; place-items:center; color:var(--px-bg-deep); border:2px solid var(--px-accent); background:var(--px-accent); font:15px var(--px-font-display); box-shadow:3px 3px 0 var(--px-shadow); }
+.feedback-content>b.down { color:var(--px-text); border-color:var(--px-danger); background:color-mix(in srgb,var(--px-danger),var(--px-bg-deep) 36%); }
+.feedback-note .feedback-content>b { border-color:var(--px-accent-2); background:var(--px-accent-2); }
+.feedback-content>div { min-width:0; }
+.feedback-content button { max-width:100%; padding:0; overflow:hidden; color:var(--px-text); border:0; background:none; font:10px var(--px-font-display); text-align:left; text-overflow:ellipsis; white-space:nowrap; }
+.feedback-content button:hover { color:var(--px-accent); }
+.feedback-content button:disabled { color:var(--px-text-muted); cursor:not-allowed; }
+.feedback-content small { display:block; margin-top:6px; color:var(--px-accent-2); font-size:8px; }
+.feedback-content p { margin:10px 0 0; overflow-wrap:anywhere; color:var(--px-text-soft); font-size:10px; line-height:1.5; }
+.feedback-card footer { min-height:40px; padding:8px 12px; display:flex; align-items:center; justify-content:space-between; gap:10px; border-top:1px solid var(--px-border); }
+.feedback-card footer span { color:var(--px-text-muted); font-size:8px; }
+.feedback-card footer button { min-height:28px; padding:4px 7px; color:var(--px-accent); border:1px solid var(--px-accent); background:var(--px-bg-deep); font-size:8px; }
+.feedback-card footer button:disabled { color:var(--px-text-muted); border-color:var(--px-border); cursor:not-allowed; }
+.feedback-empty { min-height:280px; padding:32px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; border:2px dashed var(--px-border-strong); background:var(--px-bg-deep); text-align:center; }
+.feedback-empty>span { color:var(--px-accent); font-size:30px; }
+.feedback-empty strong { color:var(--px-text); font:11px var(--px-font-display); }
+.feedback-empty p { max-width:440px; margin:0; color:var(--px-text-muted); font-size:10px; line-height:1.55; }
+@media (max-width:900px) { .feedback-summary { grid-template-columns:repeat(2,minmax(0,1fr)); }.feedback-list { grid-template-columns:1fr; } }
+@media (max-width:600px) { .feedback-toolbar { align-items:stretch; flex-direction:column; }.feedback-filters { display:grid; grid-template-columns:repeat(3,1fr); }.feedback-filters button { min-height:44px; }.feedback-toolbar>span { text-align:right; }.feedback-summary { gap:8px; }.feedback-summary>div { min-height:86px; padding:13px; }.feedback-summary strong { font-size:17px; }.feedback-author { grid-template-columns:34px minmax(0,1fr); }.feedback-author time { grid-column:2; }.feedback-content { min-height:0; padding:14px; }.feedback-card footer button { min-height:40px; } }
 @media (max-width:900px) {
   .stats-audition-controls { grid-template-columns:repeat(2,minmax(0,1fr)); }
 }

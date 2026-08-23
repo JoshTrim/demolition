@@ -56,6 +56,8 @@ Pairing uses a single-use invitation that expires after 24 hours. The normal lib
 
 Tracks can be shared individually from their detail panel, or an entire project can be shared from Project settings. Project sharing automatically includes demos added to that project later. Ratings and timed notes retain the identity that created them, and edited signed events are updated on the next sync. Use **Sync all** under **Friends & sync** to exchange changes with every reachable peer. Removing a share stops future access and updates; copies already received by a friend remain on their instance until they remove them.
 
+Friend ratings and timed notes are collected in **Friend feedback**. The inbox records when feedback first reaches the local instance, shows an unread count, supports rating/note filters and search, and links each item back to its demo. Opening the inbox saves its read position in SQLite.
+
 For a production-style local run:
 
 ```bash

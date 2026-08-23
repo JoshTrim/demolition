@@ -34,15 +34,15 @@ type TagDefinition = { name: string; createdAt: number };
 type ListenEvent = {
   id: number; eventUuid: string; demoId: number; demoUuid: string; authorId: string;
   authorName: string; authorPublicKey?: string; verdict: "up" | "down"; note: string;
-  listenedAt: number; signature?: string;
+  listenedAt: number; receivedAt?: number; signature?: string;
 };
 type ListenStats = { up: number; down: number; score: number; count: number; lastAt?: number };
 type TimedNote = {
   id: number; noteUuid: string; demoId: number; demoUuid: string; authorId: string;
   authorName: string; authorPublicKey?: string; startSeconds: number; endSeconds: number;
-  note: string; createdAt: number; signature?: string;
+  note: string; createdAt: number; receivedAt?: number; signature?: string;
 };
-type Account = { id: string; displayName: string; instanceId: string; publicKey: string; peerUrl: string; createdAt: number };
+type Account = { id: string; displayName: string; instanceId: string; publicKey: string; peerUrl: string; createdAt: number; feedbackSeenAt?: number };
 type Friend = { id: string; displayName: string; instanceId: string; peerUrl: string; publicKey: string; status: string; createdAt: number; lastSyncedAt?: number };
 type DemoShare = { demoUuid: string; friendId: string; shareAudio: boolean };
 type ProjectShare = { project: string; friendId: string; shareAudio: boolean };
@@ -57,7 +57,12 @@ type ProjectMedia = {
   url?: string;
   createdAt: number;
 };
-type View = "library" | "revisit" | "project" | "stats";
+type View = "library" | "revisit" | "project" | "stats" | "feedback";
+type FeedbackFilter = "all" | "ratings" | "notes";
+type FeedbackItem = {
+  id: string; kind: "rating" | "note"; demoId: number; demoTitle: string; authorName: string;
+  text: string; createdAt: number; receivedAt: number; verdict?: "up" | "down"; startSeconds?: number; endSeconds?: number;
+};
 type StatsFilter = { type: "duration" | "duration-min" | "duration-max" | "bpm" | "bpm-exact" | "bpm-min" | "bpm-max" | "key" | "project" | "status" | "date"; value: string; label: string };
 type StatsTrendMetric = "count" | "runtime" | "bpm";
 type StatsComparisonMode = "projects" | "dates";
@@ -571,6 +576,7 @@ export default function Home() {
   const [mediaUrls, setMediaUrls] = useState<Record<number, string>>({});
   const [orders, setOrders] = useState<Record<string, number[]>>({});
   const [view, setView] = useState<View>("library");
+  const [feedbackFilter, setFeedbackFilter] = useState<FeedbackFilter>("all");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [project, setProject] = useState("All demos");
   const [filter, setFilter] = useState("All");
@@ -997,6 +1003,30 @@ export default function Home() {
   }, [listens]);
   const statsFor = (demoId: number) => listenStats.get(demoId) ?? { up: 0, down: 0, score: 0, count: 0 };
   const selected = demos.find((demo) => demo.id === selectedId) ?? demos[0];
+  const feedbackItems = useMemo<FeedbackItem[]>(() => {
+    if (!account) return [];
+    const titles = new Map(demos.map((demo) => [demo.id, demo.title]));
+    const ratings: FeedbackItem[] = listens.filter((listen) => listen.authorId !== account.id).map((listen) => ({
+      id: `rating-${listen.eventUuid || listen.id}`, kind: "rating", demoId: listen.demoId,
+      demoTitle: titles.get(listen.demoId) || "Unavailable demo", authorName: listen.authorName || "Friend",
+      text: listen.note || "No note attached", verdict: listen.verdict, createdAt: listen.listenedAt,
+      receivedAt: listen.receivedAt || listen.listenedAt,
+    }));
+    const notes: FeedbackItem[] = timedNotes.filter((note) => note.authorId !== account.id).map((note) => ({
+      id: `note-${note.noteUuid || note.id}`, kind: "note", demoId: note.demoId,
+      demoTitle: titles.get(note.demoId) || "Unavailable demo", authorName: note.authorName || "Friend",
+      text: note.note, startSeconds: note.startSeconds, endSeconds: note.endSeconds, createdAt: note.createdAt,
+      receivedAt: note.receivedAt || note.createdAt,
+    }));
+    return [...ratings, ...notes].sort((a, b) => b.receivedAt - a.receivedAt || b.createdAt - a.createdAt);
+  }, [account, demos, listens, timedNotes]);
+  const unreadFeedbackCount = feedbackItems.filter((item) => item.receivedAt > (account?.feedbackSeenAt || 0)).length;
+  const visibleFeedback = feedbackItems.filter((item) => {
+    if (feedbackFilter === "ratings" && item.kind !== "rating") return false;
+    if (feedbackFilter === "notes" && item.kind !== "note") return false;
+    const query = search.trim().toLocaleLowerCase();
+    return !query || `${item.demoTitle} ${item.authorName} ${item.text}`.toLocaleLowerCase().includes(query);
+  });
   const revisitDemos = useMemo(() => demos.filter((demo) => demo.status === "revisit" || demo.status === "unheard").sort((a, b) => a.updatedAt - b.updatedAt), [demos]);
   const inProjects = demos.filter((demo) => demo.project !== "Unsorted").length;
   const projectNames = [...projects.map((item) => item.name), "Unsorted"];
@@ -1300,6 +1330,26 @@ export default function Home() {
 
   function closeMobileMenu() {
     setMobileMenuOpen(false);
+  }
+
+  async function openFeedback() {
+    closeMobileMenu();
+    setStatsFilters([]);
+    setProject("All demos");
+    setView("feedback");
+    if (!account || !unreadFeedbackCount) return;
+    const seenAt = Date.now();
+    setAccount({ ...account, feedbackSeenAt: seenAt });
+    const updated = await apiRequest<Account>("/api/feedback/seen", { method: "POST", body: JSON.stringify({ seenAt }) }).catch(() => undefined);
+    if (updated) setAccount(updated);
+  }
+
+  function openFeedbackDemo(item: FeedbackItem) {
+    if (!demos.some((demo) => demo.id === item.demoId)) return;
+    setSelectedId(item.demoId);
+    setProject("All demos");
+    setFilter("All");
+    setView("library");
   }
 
   function openEdit() {
@@ -2338,7 +2388,7 @@ export default function Home() {
     event.target.value = "";
   }
 
-  const currentTitle = view === "stats" ? "Stats overview" : view === "revisit" ? "Revisit queue" : view === "project" ? project : "Demo library";
+  const currentTitle = view === "feedback" ? "Friend feedback" : view === "stats" ? "Stats overview" : view === "revisit" ? "Revisit queue" : view === "project" ? project : "Demo library";
 
   return (
     <main className="app-shell">
@@ -2349,6 +2399,7 @@ export default function Home() {
           <nav className="main-nav" aria-label="Main navigation">
             <button onClick={() => { closeMobileMenu(); selectProject("All demos"); }} className={`nav-item ${view === "library" ? "active" : ""}`}><span>▦</span> Demo library <b>{demos.length}</b></button>
             <button onClick={() => { closeMobileMenu(); setStatsFilters([]); setView("revisit"); setProject("All demos"); setFilter("All"); }} className={`nav-item ${view === "revisit" ? "active" : ""}`}><span>◌</span> Revisit queue <b className="inbox-count">{revisitDemos.length}</b></button>
+            <button onClick={openFeedback} className={`nav-item ${view === "feedback" ? "active" : ""}`}><span>↯</span> Friend feedback {unreadFeedbackCount > 0 ? <b className="inbox-count">{unreadFeedbackCount}</b> : <b>{feedbackItems.length}</b>}</button>
             <button onClick={() => { closeMobileMenu(); setView("stats"); setProject("All demos"); setFilter("All"); }} className={`nav-item ${view === "stats" ? "active" : ""}`}><span>▥</span> Stats overview</button>
             <button onClick={() => { closeMobileMenu(); setShowTags(true); }} className="nav-item"><span>#</span> Manage tags <b>{tags.length}</b></button>
             <button onClick={() => { closeMobileMenu(); exportBackup(); }} className="nav-item"><span>⇩</span> Export backup</button>
@@ -2370,14 +2421,35 @@ export default function Home() {
       </aside>
 
       <section className="content">
-        <header className="topbar"><div className="breadcrumb"><span>Workspace</span><i>/</i><strong>{currentTitle}</strong></div><div className="top-actions"><label className="search"><span>⌕</span><input value={search} onChange={(event) => { setStatsFilters([]); setSearch(event.target.value); }} placeholder="Search demos" /></label><button className="avatar" aria-label="Open account" onClick={() => setShowAccount(true)}>{account?.displayName.slice(0, 2).toUpperCase() || "—"}</button></div></header>
+        <header className="topbar"><div className="breadcrumb"><span>Workspace</span><i>/</i><strong>{currentTitle}</strong></div><div className="top-actions"><label className="search"><span>⌕</span><input value={search} onChange={(event) => { setStatsFilters([]); setSearch(event.target.value); }} placeholder={view === "feedback" ? "Search feedback" : "Search demos"} /></label><button className="avatar" aria-label="Open account" onClick={() => setShowAccount(true)}>{account?.displayName.slice(0, 2).toUpperCase() || "—"}</button></div></header>
         <div className="page-content">
-          <div className="heading-row"><div><div className="eyebrow">{todayLabel || "TODAY"}</div><h1>{currentTitle}</h1><p className="lede">{view === "stats" ? <>{statsFilters.length ? "Filtered stats for" : "A catalogue overview of"} <strong>{statsFilteredDemos.length} demos</strong>, their lengths, tempos, and keys.</> : view === "revisit" ? `${revisitDemos.length} demos are queued, oldest first.` : view === "project" ? projectTab === "moodboard" ? "Collect visual, video, and audio references for this project." : "Move demos between the candidate pool and ordered tracklist." : <>Your library contains <strong>{demos.length} demos</strong>, with <strong>{revisitDemos.length}</strong> queued for review.</>}</p></div><div className="heading-actions">{view === "stats" && <><button className="secondary-button" onClick={() => { setDetectProgress(""); setShowBulkDetect(true); }}>⌁ Detect BPM</button><button className="secondary-button" onClick={() => { setKeyDetectProgress(""); setShowKeyDetect(true); }}>♬ Analyze keys</button><button className="primary-button stats-listen-button" disabled={!statsAuditionDemos.length} onClick={() => startRapidListen(statsAuditionDemos)}>{statsAuditionDemos.length ? `▶ Listen to ${statsFilters.length ? "filtered " : ""}${statsAuditionDemos.length}` : statsFilteredDemos.length ? "No local audio" : "No matching demos"}</button></>}{view === "revisit" && <button className="secondary-button" onClick={pickForMe}>Pick one for me</button>}{view === "project" && project !== "Unsorted" && <button className="settings-button" onClick={() => setShowProjectSettings(true)} aria-label={`Manage ${project}`}>⚙ Project settings</button>}{view === "project" && project !== "Unsorted" && projectTab === "moodboard" && <button className="secondary-button" onClick={() => setShowMedia(true)}>＋ Add reference</button>}<button className="secondary-button" onClick={openSingleImport}>＋ One demo</button><button className="primary-button" onClick={openBulkImport}><span>＋</span> {pendingBulkImport?.conflicts.length ? `Resolve ${pendingBulkImport.conflicts.length} conflicts` : "Bulk import"}</button></div></div>
+          <div className="heading-row"><div><div className="eyebrow">{todayLabel || "TODAY"}</div><h1>{currentTitle}</h1><p className="lede">{view === "feedback" ? <><strong>{feedbackItems.length}</strong> ratings and timed notes received from friends.</> : view === "stats" ? <>{statsFilters.length ? "Filtered stats for" : "A catalogue overview of"} <strong>{statsFilteredDemos.length} demos</strong>, their lengths, tempos, and keys.</> : view === "revisit" ? `${revisitDemos.length} demos are queued, oldest first.` : view === "project" ? projectTab === "moodboard" ? "Collect visual, video, and audio references for this project." : "Move demos between the candidate pool and ordered tracklist." : <>Your library contains <strong>{demos.length} demos</strong>, with <strong>{revisitDemos.length}</strong> queued for review.</>}</p></div><div className="heading-actions">{view === "feedback" && <button className="primary-button" disabled={!friends.length || syncingFriendIds.length > 0} onClick={syncAllFriends}>{syncingFriendIds.length ? "Syncing…" : "Sync friends"}</button>}{view === "stats" && <><button className="secondary-button" onClick={() => { setDetectProgress(""); setShowBulkDetect(true); }}>⌁ Detect BPM</button><button className="secondary-button" onClick={() => { setKeyDetectProgress(""); setShowKeyDetect(true); }}>♬ Analyze keys</button><button className="primary-button stats-listen-button" disabled={!statsAuditionDemos.length} onClick={() => startRapidListen(statsAuditionDemos)}>{statsAuditionDemos.length ? `▶ Listen to ${statsFilters.length ? "filtered " : ""}${statsAuditionDemos.length}` : statsFilteredDemos.length ? "No local audio" : "No matching demos"}</button></>}{view === "revisit" && <button className="secondary-button" onClick={pickForMe}>Pick one for me</button>}{view === "project" && project !== "Unsorted" && <button className="settings-button" onClick={() => setShowProjectSettings(true)} aria-label={`Manage ${project}`}>⚙ Project settings</button>}{view === "project" && project !== "Unsorted" && projectTab === "moodboard" && <button className="secondary-button" onClick={() => setShowMedia(true)}>＋ Add reference</button>}{view !== "feedback" && <><button className="secondary-button" onClick={openSingleImport}>＋ One demo</button><button className="primary-button" onClick={openBulkImport}><span>＋</span> {pendingBulkImport?.conflicts.length ? `Resolve ${pendingBulkImport.conflicts.length} conflicts` : "Bulk import"}</button></>}</div></div>
           {importNotice && <div className="import-notice" role="status"><span>✓</span><p>{importNotice}</p><button onClick={() => setImportNotice("")} aria-label="Dismiss import summary">×</button></div>}
 
           {statsFilters.length > 0 && view !== "stats" && <div className="stats-filter-notice" role="status"><span>FILTER</span><div className="stats-filter-copy"><p><strong>{statsFilteredDemos.length}</strong> matching demos from the statistics view.</p><div className="stats-filter-chips">{statsFilters.map((activeFilter) => <button type="button" className="stats-filter-chip" key={`${activeFilter.type}-${activeFilter.value}`} onClick={() => setStatsFilters(statsFilters.filter((filter) => filter !== activeFilter))} aria-label={`Remove ${activeFilter.label} filter`}>{activeFilter.label} ×</button>)}</div></div><button className="stats-filter-listen" disabled={!statsAuditionDemos.length} onClick={() => startRapidListen(statsAuditionDemos)}>{statsAuditionDemos.length ? `▶ Listen to ${statsAuditionDemos.length}` : statsFilteredDemos.length ? "No local audio" : "No matches"}</button><button onClick={() => setStatsFilters([])}>Clear all ×</button></div>}
 
-          {view === "stats" ? <section className="stats-page" aria-label="Demo statistics">
+          {view === "feedback" ? <section className="feedback-page" aria-label="Friend feedback">
+            <div className="feedback-summary">
+              <div><span className="stat-label">ALL FEEDBACK</span><strong>{feedbackItems.length}</strong></div>
+              <div><span className="stat-label">RATINGS</span><strong>{feedbackItems.filter((item) => item.kind === "rating").length}</strong></div>
+              <div><span className="stat-label">TIMED NOTES</span><strong>{feedbackItems.filter((item) => item.kind === "note").length}</strong></div>
+              <div><span className="stat-label">LISTENERS</span><strong>{new Set(feedbackItems.map((item) => item.authorName)).size}</strong></div>
+            </div>
+            <div className="feedback-toolbar">
+              <div className="feedback-filters" role="group" aria-label="Filter feedback">
+                {(["all", "ratings", "notes"] as FeedbackFilter[]).map((item) => <button type="button" key={item} className={feedbackFilter === item ? "active" : ""} aria-pressed={feedbackFilter === item} onClick={() => setFeedbackFilter(item)}>{item === "all" ? "All" : item === "ratings" ? "Ratings" : "Timed notes"}</button>)}
+              </div>
+              <span>{visibleFeedback.length} shown · newest received first</span>
+            </div>
+            {visibleFeedback.length ? <div className="feedback-list">{visibleFeedback.map((item) => {
+              const available = demos.some((demo) => demo.id === item.demoId);
+              return <article className={`feedback-card feedback-${item.kind}`} key={item.id}>
+                <div className="feedback-author"><span>{item.authorName.slice(0, 2).toUpperCase()}</span><div><strong>{item.authorName}</strong><small>{item.kind === "rating" ? "TRACK RATING" : "TIMED NOTE"}</small></div><time dateTime={new Date(item.receivedAt).toISOString()}>{relativeDate(item.receivedAt)}</time></div>
+                <div className="feedback-content"><b className={item.verdict === "down" ? "down" : ""}>{item.kind === "rating" ? item.verdict === "up" ? "↑" : "↓" : "⌁"}</b><div><button type="button" disabled={!available} onClick={() => openFeedbackDemo(item)}>{item.demoTitle}</button>{item.kind === "note" && <small>{formatDuration(item.startSeconds || 0)}–{formatDuration(item.endSeconds || 0)}</small>}<p>{item.text}</p></div></div>
+                <footer><span>{item.kind === "rating" ? item.verdict === "up" ? "Thumbs up" : "Thumbs down" : "Range note"}</span><button type="button" disabled={!available} onClick={() => openFeedbackDemo(item)}>{available ? "Open demo →" : "Demo unavailable"}</button></footer>
+              </article>;
+            })}</div> : <div className="feedback-empty"><span>↯</span><strong>{feedbackItems.length ? "No feedback matches this view" : "No friend feedback yet"}</strong><p>{feedbackItems.length ? "Change the filter or search text." : friends.length ? "Sync your connected friends to receive their ratings and timed notes." : "Connect a friend, share demos, then sync their responses here."}</p>{friends.length > 0 && !feedbackItems.length && <button className="primary-button" onClick={syncAllFriends}>Sync friends</button>}</div>}
+          </section> : view === "stats" ? <section className="stats-page" aria-label="Demo statistics">
             <div className="stats-summary-grid">
               <article className="stats-summary-card stats-summary-primary"><span className="stat-label">CATALOGUE</span><strong>{statsFilteredDemos.length}</strong><small>{statsOverview.audioCount} with local audio{statsFilters.length ? ` · ${demos.length} total` : ""}</small></article>
               <article className="stats-summary-card"><span className="stat-label">TOTAL RUNTIME</span><strong>{formatRuntime(statsOverview.totalRuntime)}</strong><small>{statsOverview.timedCount} demos with a recorded length</small></article>

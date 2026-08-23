@@ -8,7 +8,7 @@ import { pipeline } from "node:stream/promises";
 import {
   acceptPairing, audioDirectory, authenticatePeer, buildSyncPackage, canFriendAccessAudio,
   createPairingInvite, databasePath, dataDirectory, decodePairingInvite, demoByUuid, friendWithSecrets,
-  getAccount, getStoredFile, markFriendSyncError, markPeerAudioStored, mediaDirectory,
+  getAccount, getStoredFile, markFeedbackSeen, markFriendSyncError, markPeerAudioStored, mediaDirectory,
   mergeSyncPackage, readWorkspace, removeFriend, removeStoredFile, saveStoredFile,
   storedFileBytes, updateAccount, upsertFriend, writeWorkspace,
 } from "./database.mjs";
@@ -359,6 +359,7 @@ const server = createServer(async (req, res) => {
       return sendJson(req, res, 200, { ok: true });
     }
     if (req.method === "PUT" && url.pathname === "/api/account") return sendJson(req, res, 200, updateAccount(await readJson(req)));
+    if (req.method === "POST" && url.pathname === "/api/feedback/seen") return sendJson(req, res, 200, markFeedbackSeen((await readJson(req)).seenAt));
     if (req.method === "POST" && url.pathname === "/api/invites") return sendJson(req, res, 201, { code: createPairingInvite() });
     if (req.method === "POST" && url.pathname === "/api/friends/pair") return sendJson(req, res, 201, { friend: await pairWithInvite((await readJson(req)).code) });
     const syncRoute = url.pathname.match(/^\/api\/friends\/([^/]+)\/sync$/);

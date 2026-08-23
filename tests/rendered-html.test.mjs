@@ -31,6 +31,7 @@ test("server-renders the Demolition workspace", async () => {
   assert.match(html, /Manage tags/);
   assert.match(html, /Listen mode/);
   assert.match(html, /Friends &amp; sync/);
+  assert.match(html, /Friend feedback/);
   assert.match(html, /Favourites/);
   assert.match(html, /Favourite/);
   assert.doesNotMatch(html, /out of 5 stars|Unrated/);
@@ -51,8 +52,9 @@ test("uses the local SQLite and managed-file backend", async () => {
       shares: [], listens: [{ id: 2, eventUuid: "listen-one", demoId: 1, demoUuid: "demo-one", authorId: account.id, authorName: account.displayName, verdict: "up", note: "Strong chorus", listenedAt: 2 }],
       timedNotes: [{ id: 3, noteUuid: "note-one", demoId: 1, demoUuid: "demo-one", authorId: account.id, authorName: account.displayName, startSeconds: 10, endSeconds: 18.5, note: "Bass change", createdAt: 3 }]
     });
+    database.markFeedbackSeen(1234);
     const state = database.readWorkspace();
-    if (state.projects[0].name !== "Album" || state.tags[0].name !== "test" || state.demos[0].creationDate !== "2019-04-12" || state.demos[0].uuid !== "demo-one" || state.demos[0].favorite !== true || state.demos[0].trimStartSeconds !== 4.5 || state.demos[0].trimEndSeconds !== 52.25 || state.orders.Album[0] !== 1 || state.listens[0].verdict !== "up" || state.listens[0].note !== "Strong chorus" || state.listens[0].authorId !== account.id || !state.listens[0].signature || state.timedNotes[0].endSeconds !== 18.5 || !state.timedNotes[0].signature) process.exit(1);
+    if (state.projects[0].name !== "Album" || state.tags[0].name !== "test" || state.demos[0].creationDate !== "2019-04-12" || state.demos[0].uuid !== "demo-one" || state.demos[0].favorite !== true || state.demos[0].trimStartSeconds !== 4.5 || state.demos[0].trimEndSeconds !== 52.25 || state.orders.Album[0] !== 1 || state.listens[0].verdict !== "up" || state.listens[0].note !== "Strong chorus" || state.listens[0].authorId !== account.id || !state.listens[0].receivedAt || !state.listens[0].signature || state.timedNotes[0].endSeconds !== 18.5 || !state.timedNotes[0].receivedAt || !state.timedNotes[0].signature || state.account.feedbackSeenAt !== 1234) process.exit(1);
   `;
   await run(process.execPath, ["--input-type=module", "-e", script], {
     cwd: temporaryDirectory,
@@ -90,6 +92,10 @@ test("pairs local identities and exchanges signed ratings", async () => {
     second.mergeSyncPackage(firstAccount.id, first.buildSyncPackage(secondAccount.id));
     let secondState = second.readWorkspace();
     if (secondState.demos[0].ownerId !== firstAccount.id || secondState.listens[0].authorName !== "Alex" || secondState.timedNotes[0].note !== "Intro texture") process.exit(1);
+    const firstReceivedAt = secondState.listens[0].receivedAt;
+    while (Date.now() <= firstReceivedAt) {}
+    second.mergeSyncPackage(firstAccount.id, first.buildSyncPackage(secondAccount.id));
+    if (second.readWorkspace().listens[0].receivedAt !== firstReceivedAt) process.exit(1);
     const firstStateAfterShare = first.readWorkspace();
     first.writeWorkspace({ ...firstStateAfterShare,
       listens: firstStateAfterShare.listens.map((listen) => listen.eventUuid === "alex-vote" ? { ...listen, verdict: "down", note: "changed owner vote", signature: undefined } : listen),
@@ -193,6 +199,10 @@ test("keeps local data out of version control", async () => {
   assert.match(page, /syncAllFriends/);
   assert.match(page, /SCORE BY LISTENER/);
   assert.match(page, /SHARE PROJECT/);
+  assert.match(page, /feedbackItems/);
+  assert.match(page, /openFeedback/);
+  assert.match(page, /Friend feedback/);
+  assert.match(page, /TIMED NOTES/);
   assert.match(page, /onPointerDown=\{beginTimedNoteRange\}/);
   assert.match(page, /waveformPeaks/);
   assert.match(page, /libraryAudioChecksums/);

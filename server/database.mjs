@@ -75,6 +75,7 @@ database.exec(`
     author_name TEXT,
     author_public_key TEXT,
     signature TEXT,
+    received_at INTEGER,
     FOREIGN KEY (demo_id) REFERENCES demos(id) ON DELETE CASCADE
   );
 
@@ -91,6 +92,7 @@ database.exec(`
     note TEXT NOT NULL,
     created_at INTEGER NOT NULL,
     signature TEXT,
+    received_at INTEGER,
     FOREIGN KEY (demo_id) REFERENCES demos(id) ON DELETE CASCADE
   );
 
@@ -180,6 +182,11 @@ addColumn("listens", "author_id", "TEXT");
 addColumn("listens", "author_name", "TEXT");
 addColumn("listens", "author_public_key", "TEXT");
 addColumn("listens", "signature", "TEXT");
+addColumn("listens", "received_at", "INTEGER");
+addColumn("timed_notes", "received_at", "INTEGER");
+addColumn("owner_identity", "feedback_seen_at", "INTEGER NOT NULL DEFAULT 0");
+
+database.exec("UPDATE listens SET received_at = listened_at WHERE received_at IS NULL; UPDATE timed_notes SET received_at = created_at WHERE received_at IS NULL;");
 
 database.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS idx_demos_uuid ON demos(uuid) WHERE uuid IS NOT NULL;
@@ -204,7 +211,7 @@ function createOwner() {
     id: randomUUID(), display_name: "Josh", instance_id: randomUUID(),
     public_key: publicKey.export({ type: "spki", format: "pem" }),
     private_key: privateKey.export({ type: "pkcs8", format: "pem" }),
-    peer_url: `http://127.0.0.1:${Number(process.env.DEMOLITION_API_PORT || 3001)}`, created_at: Date.now(),
+    peer_url: `http://127.0.0.1:${Number(process.env.DEMOLITION_API_PORT || 3001)}`, created_at: Date.now(), feedback_seen_at: 0,
   };
   database.prepare("INSERT INTO owner_identity (id, display_name, instance_id, public_key, private_key, peer_url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
     .run(owner.id, owner.display_name, owner.instance_id, owner.public_key, owner.private_key, owner.peer_url, owner.created_at);
@@ -291,7 +298,7 @@ const listProjectShares = database.prepare("SELECT project, friend_id, share_aud
 function publicOwner(row = owner) {
   return {
     id: row.id, displayName: row.display_name, instanceId: row.instance_id,
-    publicKey: row.public_key, peerUrl: row.peer_url, createdAt: Number(row.created_at),
+    publicKey: row.public_key, peerUrl: row.peer_url, createdAt: Number(row.created_at), feedbackSeenAt: Number(row.feedback_seen_at || 0),
   };
 }
 
@@ -314,7 +321,7 @@ function mapListen(row) {
   return {
     id: Number(row.id), eventUuid: row.event_uuid, demoId: Number(row.demo_id), demoUuid: row.demo_uuid,
     authorId: row.author_id, authorName: row.author_name, authorPublicKey: row.author_public_key,
-    verdict: row.verdict, note: row.note, listenedAt: Number(row.listened_at), signature: row.signature,
+    verdict: row.verdict, note: row.note, listenedAt: Number(row.listened_at), receivedAt: Number(row.received_at || row.listened_at), signature: row.signature,
   };
 }
 
@@ -323,7 +330,7 @@ function mapTimedNote(row) {
     id: Number(row.id), noteUuid: row.note_uuid, demoId: Number(row.demo_id), demoUuid: row.demo_uuid,
     authorId: row.author_id, authorName: row.author_name, authorPublicKey: row.author_public_key,
     startSeconds: Number(row.start_seconds), endSeconds: Number(row.end_seconds), note: row.note,
-    createdAt: Number(row.created_at), signature: row.signature,
+    createdAt: Number(row.created_at), receivedAt: Number(row.received_at || row.created_at), signature: row.signature,
   };
 }
 
@@ -339,6 +346,12 @@ export function updateAccount({ displayName, peerUrl }) {
   database.prepare("UPDATE owner_identity SET display_name = ?, peer_url = ? WHERE id = ?").run(name, url, owner.id);
   owner.display_name = name;
   owner.peer_url = url;
+  return getAccount();
+}
+
+export function markFeedbackSeen(seenAt = Date.now()) {
+  const timestamp = Math.max(0, Number(seenAt) || Date.now());
+  database.prepare("UPDATE owner_identity SET feedback_seen_at = MAX(feedback_seen_at, ?) WHERE id = ?").run(timestamp, owner.id);
   return getAccount();
 }
 
@@ -380,12 +393,12 @@ const insertDemo = database.prepare(`
 const insertTrack = database.prepare("INSERT INTO tracklist (project, demo_id, position) VALUES (?, ?, ?)");
 const insertMedia = database.prepare("INSERT INTO project_media (id, project, kind, source, title, note, file_name, url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
 const insertListen = database.prepare(`
-  INSERT INTO listens (id, event_uuid, demo_id, demo_uuid, author_id, author_name, author_public_key, verdict, note, listened_at, signature)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  INSERT INTO listens (id, event_uuid, demo_id, demo_uuid, author_id, author_name, author_public_key, verdict, note, listened_at, signature, received_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 const insertTimedNote = database.prepare(`
-  INSERT INTO timed_notes (id, note_uuid, demo_id, demo_uuid, author_id, author_name, author_public_key, start_seconds, end_seconds, note, created_at, signature)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  INSERT INTO timed_notes (id, note_uuid, demo_id, demo_uuid, author_id, author_name, author_public_key, start_seconds, end_seconds, note, created_at, signature, received_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 const insertShare = database.prepare("INSERT INTO demo_shares (demo_uuid, friend_id, share_audio) VALUES (?, ?, ?)");
 const insertProjectShare = database.prepare("INSERT INTO project_shares (project, friend_id, share_audio) VALUES (?, ?, ?)");
@@ -464,12 +477,12 @@ export function writeWorkspace(payload) {
     listens.forEach((input) => {
       if (!demoIds.has(Number(input.demoId)) || (input.verdict !== "up" && input.verdict !== "down")) return;
       const listen = localizeListen(input, demoById);
-      insertListen.run(listen.id, listen.eventUuid, listen.demoId, listen.demoUuid, listen.authorId, listen.authorName, listen.authorPublicKey, listen.verdict, listen.note ?? "", listen.listenedAt || Date.now(), listen.signature ?? null);
+      insertListen.run(listen.id, listen.eventUuid, listen.demoId, listen.demoUuid, listen.authorId, listen.authorName, listen.authorPublicKey, listen.verdict, listen.note ?? "", listen.listenedAt || Date.now(), listen.signature ?? null, listen.receivedAt || listen.listenedAt || Date.now());
     });
     timedNotes.forEach((input) => {
       if (!demoIds.has(Number(input.demoId)) || !String(input.note ?? "").trim()) return;
       const note = localizeTimedNote(input, demoById);
-      insertTimedNote.run(note.id, note.noteUuid, note.demoId, note.demoUuid, note.authorId, note.authorName, note.authorPublicKey, note.startSeconds, note.endSeconds, note.note.trim(), note.createdAt, note.signature ?? null);
+      insertTimedNote.run(note.id, note.noteUuid, note.demoId, note.demoUuid, note.authorId, note.authorName, note.authorPublicKey, note.startSeconds, note.endSeconds, note.note.trim(), note.createdAt, note.signature ?? null, note.receivedAt || note.createdAt || Date.now());
     });
     shares.forEach((share) => {
       if (demoUuids.has(share.demoUuid) && friendIds.has(share.friendId)) insertShare.run(share.demoUuid, share.friendId, share.shareAudio === false ? 0 : 1);
@@ -616,12 +629,14 @@ export function mergeSyncPackage(friendId, payload) {
         : demo.owner_id === friend.id;
       if (!allowed) continue;
       database.prepare(`
-        INSERT INTO listens (id, event_uuid, demo_id, demo_uuid, author_id, author_name, author_public_key, verdict, note, listened_at, signature)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO listens (id, event_uuid, demo_id, demo_uuid, author_id, author_name, author_public_key, verdict, note, listened_at, signature, received_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT DO UPDATE SET verdict = excluded.verdict, note = excluded.note,
-          listened_at = excluded.listened_at, author_name = excluded.author_name, signature = excluded.signature
+          listened_at = excluded.listened_at, author_name = excluded.author_name,
+          received_at = CASE WHEN listens.signature IS NOT excluded.signature THEN excluded.received_at ELSE listens.received_at END,
+          signature = excluded.signature
         WHERE listens.demo_uuid = excluded.demo_uuid AND listens.author_id = excluded.author_id
-      `).run(nextNumericId("listens"), listen.eventUuid, demo.id, listen.demoUuid, listen.authorId, listen.authorName || "Friend", listen.authorPublicKey, listen.verdict, listen.note ?? "", listen.listenedAt, listen.signature);
+      `).run(nextNumericId("listens"), listen.eventUuid, demo.id, listen.demoUuid, listen.authorId, listen.authorName || "Friend", listen.authorPublicKey, listen.verdict, listen.note ?? "", listen.listenedAt, listen.signature, Date.now());
     }
     for (const note of incomingTimedNotes) {
       const startSeconds = Number(note.startSeconds);
@@ -634,12 +649,14 @@ export function mergeSyncPackage(friendId, payload) {
         : demo.owner_id === friend.id;
       if (!allowed) continue;
       database.prepare(`
-        INSERT INTO timed_notes (id, note_uuid, demo_id, demo_uuid, author_id, author_name, author_public_key, start_seconds, end_seconds, note, created_at, signature)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO timed_notes (id, note_uuid, demo_id, demo_uuid, author_id, author_name, author_public_key, start_seconds, end_seconds, note, created_at, signature, received_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT DO UPDATE SET start_seconds = excluded.start_seconds, end_seconds = excluded.end_seconds,
-          note = excluded.note, created_at = excluded.created_at, author_name = excluded.author_name, signature = excluded.signature
+          note = excluded.note, created_at = excluded.created_at, author_name = excluded.author_name,
+          received_at = CASE WHEN timed_notes.signature IS NOT excluded.signature THEN excluded.received_at ELSE timed_notes.received_at END,
+          signature = excluded.signature
         WHERE timed_notes.demo_uuid = excluded.demo_uuid AND timed_notes.author_id = excluded.author_id
-      `).run(nextNumericId("timed_notes"), note.noteUuid, demo.id, note.demoUuid, note.authorId, note.authorName || "Friend", note.authorPublicKey, startSeconds, endSeconds, note.note.trim(), Number(note.createdAt) || Date.now(), note.signature);
+      `).run(nextNumericId("timed_notes"), note.noteUuid, demo.id, note.demoUuid, note.authorId, note.authorName || "Friend", note.authorPublicKey, startSeconds, endSeconds, note.note.trim(), Number(note.createdAt) || Date.now(), note.signature, Date.now());
     }
     database.prepare("UPDATE friends SET last_synced_at = ?, status = 'connected' WHERE id = ?").run(Date.now(), friendId);
     database.exec("COMMIT");
