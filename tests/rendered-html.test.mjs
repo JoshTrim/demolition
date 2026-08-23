@@ -30,6 +30,7 @@ test("server-renders the Demolition workspace", async () => {
   assert.match(html, /Bulk import/);
   assert.match(html, /Manage tags/);
   assert.match(html, /Listen mode/);
+  assert.match(html, /Friends &amp; sync/);
   assert.match(html, /Favourites/);
   assert.match(html, /Favourite/);
   assert.doesNotMatch(html, /out of 5 stars|Unrated/);
@@ -80,20 +81,33 @@ test("pairs local identities and exchanges signed ratings", async () => {
     const accepted = first.acceptPairing({ inviteToken: invitation.token, peer: secondAccount, tokenForRemote: tokenForFirst });
     second.upsertFriend(accepted.account, tokenForFirst, accepted.tokenForCaller);
     first.writeWorkspace({
-      projects: [], tags: [], orders: {}, media: [],
-      demos: [{ id: 1, uuid: "shared-demo", ownerId: firstAccount.id, title: "Shared", bpm: 110, key: "D", duration: "01:00", status: "unheard", tags: [], note: "", nextAction: "", project: "Unsorted", updatedAt: 1 }],
+      projects: [{ name: "Album", color: "blue", mood: "" }], tags: [], orders: {}, media: [],
+      demos: [{ id: 1, uuid: "shared-demo", ownerId: firstAccount.id, title: "Shared", bpm: 110, key: "D", duration: "01:00", status: "unheard", tags: [], note: "", nextAction: "", project: "Album", updatedAt: 1 }],
       listens: [{ id: 2, eventUuid: "alex-vote", demoId: 1, demoUuid: "shared-demo", authorId: firstAccount.id, authorName: "Alex", verdict: "up", note: "owner vote", listenedAt: 2 }],
       timedNotes: [{ id: 4, noteUuid: "alex-note", demoId: 1, demoUuid: "shared-demo", authorId: firstAccount.id, authorName: "Alex", startSeconds: 4, endSeconds: 9, note: "Intro texture", createdAt: 4 }],
-      shares: [{ demoUuid: "shared-demo", friendId: secondAccount.id, shareAudio: false }]
+      shares: [], projectShares: [{ project: "Album", friendId: secondAccount.id, shareAudio: false }]
     });
     second.mergeSyncPackage(firstAccount.id, first.buildSyncPackage(secondAccount.id));
     let secondState = second.readWorkspace();
     if (secondState.demos[0].ownerId !== firstAccount.id || secondState.listens[0].authorName !== "Alex" || secondState.timedNotes[0].note !== "Intro texture") process.exit(1);
+    const firstStateAfterShare = first.readWorkspace();
+    first.writeWorkspace({ ...firstStateAfterShare,
+      listens: firstStateAfterShare.listens.map((listen) => listen.eventUuid === "alex-vote" ? { ...listen, verdict: "down", note: "changed owner vote", signature: undefined } : listen),
+      timedNotes: firstStateAfterShare.timedNotes.map((note) => note.noteUuid === "alex-note" ? { ...note, startSeconds: 6, endSeconds: 11, note: "Changed intro note", signature: undefined } : note),
+    });
+    second.mergeSyncPackage(firstAccount.id, first.buildSyncPackage(secondAccount.id));
+    secondState = second.readWorkspace();
+    if (!secondState.listens.some((listen) => listen.eventUuid === "alex-vote" && listen.verdict === "down" && listen.note === "changed owner vote") || !secondState.timedNotes.some((note) => note.noteUuid === "alex-note" && note.startSeconds === 6 && note.note === "Changed intro note")) process.exit(1);
     const remoteDemo = secondState.demos[0];
     second.writeWorkspace({ ...secondState, listens: [...secondState.listens, { id: 3, eventUuid: "blair-vote", demoId: remoteDemo.id, demoUuid: remoteDemo.uuid, authorId: secondAccount.id, authorName: "Blair", verdict: "down", note: "friend vote", listenedAt: 3 }], timedNotes: [...secondState.timedNotes, { id: 5, noteUuid: "blair-note", demoId: remoteDemo.id, demoUuid: remoteDemo.uuid, authorId: secondAccount.id, authorName: "Blair", startSeconds: 12, endSeconds: 17, note: "Try a shorter fill", createdAt: 5 }] });
     first.mergeSyncPackage(secondAccount.id, second.buildSyncPackage(firstAccount.id));
     const firstState = first.readWorkspace();
     if (!firstState.listens.some((listen) => listen.authorName === "Blair" && listen.verdict === "down" && listen.signature) || !firstState.timedNotes.some((note) => note.authorName === "Blair" && note.note === "Try a shorter fill" && note.signature)) process.exit(1);
+    first.writeWorkspace({ ...firstState, projectShares: [] });
+    const secondBeforeRevokedVote = second.readWorkspace();
+    second.writeWorkspace({ ...secondBeforeRevokedVote, listens: [...secondBeforeRevokedVote.listens, { id: 6, eventUuid: "revoked-vote", demoId: remoteDemo.id, demoUuid: remoteDemo.uuid, authorId: secondAccount.id, authorName: "Blair", verdict: "up", note: "after revoke", listenedAt: 6 }] });
+    first.mergeSyncPackage(secondAccount.id, second.buildSyncPackage(firstAccount.id));
+    if (first.readWorkspace().listens.some((listen) => listen.eventUuid === "revoked-vote")) process.exit(1);
   `;
   await run(process.execPath, ["--input-type=module", "-e", script], { cwd: temporaryDirectory });
 });
@@ -175,6 +189,10 @@ test("keeps local data out of version control", async () => {
   assert.doesNotMatch(page, /className=\{`rapid-art/);
   assert.match(page, /className="rapid-tags"/);
   assert.match(page, /createAndApplyRapidTag/);
+  assert.match(page, /projectShares/);
+  assert.match(page, /syncAllFriends/);
+  assert.match(page, /SCORE BY LISTENER/);
+  assert.match(page, /SHARE PROJECT/);
   assert.match(page, /onPointerDown=\{beginTimedNoteRange\}/);
   assert.match(page, /waveformPeaks/);
   assert.match(page, /libraryAudioChecksums/);

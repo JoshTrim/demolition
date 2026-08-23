@@ -153,6 +153,14 @@ database.exec(`
     PRIMARY KEY (demo_uuid, friend_id),
     FOREIGN KEY (friend_id) REFERENCES friends(id) ON DELETE CASCADE
   );
+
+  CREATE TABLE IF NOT EXISTS project_shares (
+    project TEXT NOT NULL,
+    friend_id TEXT NOT NULL,
+    share_audio INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (project, friend_id),
+    FOREIGN KEY (friend_id) REFERENCES friends(id) ON DELETE CASCADE
+  );
 `);
 
 function addColumn(table, column, definition) {
@@ -184,6 +192,7 @@ database.exec(`
   CREATE INDEX IF NOT EXISTS idx_listens_demo_uuid ON listens(demo_uuid, listened_at DESC);
   CREATE INDEX IF NOT EXISTS idx_timed_notes_demo_range ON timed_notes(demo_uuid, start_seconds, end_seconds);
   CREATE INDEX IF NOT EXISTS idx_shares_friend ON demo_shares(friend_id, demo_uuid);
+  CREATE INDEX IF NOT EXISTS idx_project_shares_friend ON project_shares(friend_id, project);
   PRAGMA optimize;
 `);
 
@@ -195,7 +204,7 @@ function createOwner() {
     id: randomUUID(), display_name: "Josh", instance_id: randomUUID(),
     public_key: publicKey.export({ type: "spki", format: "pem" }),
     private_key: privateKey.export({ type: "pkcs8", format: "pem" }),
-    peer_url: "http://127.0.0.1:3001", created_at: Date.now(),
+    peer_url: `http://127.0.0.1:${Number(process.env.DEMOLITION_API_PORT || 3001)}`, created_at: Date.now(),
   };
   database.prepare("INSERT INTO owner_identity (id, display_name, instance_id, public_key, private_key, peer_url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
     .run(owner.id, owner.display_name, owner.instance_id, owner.public_key, owner.private_key, owner.peer_url, owner.created_at);
@@ -277,6 +286,7 @@ const listListens = database.prepare("SELECT * FROM listens ORDER BY listened_at
 const listTimedNotes = database.prepare("SELECT * FROM timed_notes ORDER BY start_seconds, created_at");
 const listFriends = database.prepare("SELECT id, display_name, instance_id, peer_url, public_key, status, created_at, last_synced_at FROM friends ORDER BY display_name COLLATE NOCASE");
 const listShares = database.prepare("SELECT demo_uuid, friend_id, share_audio FROM demo_shares ORDER BY demo_uuid, friend_id");
+const listProjectShares = database.prepare("SELECT project, friend_id, share_audio FROM project_shares ORDER BY project, friend_id");
 
 function publicOwner(row = owner) {
   return {
@@ -354,8 +364,9 @@ export function readWorkspace() {
     createdAt: Number(row.created_at), lastSyncedAt: row.last_synced_at == null ? undefined : Number(row.last_synced_at),
   }));
   const shares = listShares.all().map((row) => ({ demoUuid: row.demo_uuid, friendId: row.friend_id, shareAudio: Boolean(row.share_audio) }));
+  const projectShares = listProjectShares.all().map((row) => ({ project: row.project, friendId: row.friend_id, shareAudio: Boolean(row.share_audio) }));
   return {
-    account: getAccount(), friends, shares, projects, tags, demos, orders, media, listens, timedNotes,
+    account: getAccount(), friends, shares, projectShares, projects, tags, demos, orders, media, listens, timedNotes,
     empty: projects.length === 0 && tags.length === 0 && demos.length === 0 && media.length === 0,
   };
 }
@@ -377,6 +388,7 @@ const insertTimedNote = database.prepare(`
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 const insertShare = database.prepare("INSERT INTO demo_shares (demo_uuid, friend_id, share_audio) VALUES (?, ?, ?)");
+const insertProjectShare = database.prepare("INSERT INTO project_shares (project, friend_id, share_audio) VALUES (?, ?, ?)");
 
 function localizeListen(listen, demoById) {
   const demoUuid = listen.demoUuid || demoById.get(Number(listen.demoId))?.uuid;
@@ -414,6 +426,7 @@ export function writeWorkspace(payload) {
   const listens = Array.isArray(payload.listens) ? payload.listens : [];
   const timedNotes = Array.isArray(payload.timedNotes) ? payload.timedNotes : [];
   const shares = Array.isArray(payload.shares) ? payload.shares : [];
+  const projectShares = Array.isArray(payload.projectShares) ? payload.projectShares : [];
   const orders = payload.orders && typeof payload.orders === "object" ? payload.orders : {};
   const suppliedTags = Array.isArray(payload.tags) ? payload.tags : [];
   const existingUuids = new Map(database.prepare("SELECT id, uuid FROM demos").all().map((row) => [Number(row.id), row.uuid]));
@@ -437,7 +450,7 @@ export function writeWorkspace(payload) {
   }
   database.exec("BEGIN IMMEDIATE");
   try {
-    database.exec("DELETE FROM tracklist; DELETE FROM project_media; DELETE FROM demo_shares; DELETE FROM timed_notes; DELETE FROM listens; DELETE FROM demos; DELETE FROM projects; DELETE FROM tags;");
+    database.exec("DELETE FROM tracklist; DELETE FROM project_media; DELETE FROM demo_shares; DELETE FROM project_shares; DELETE FROM timed_notes; DELETE FROM listens; DELETE FROM demos; DELETE FROM projects; DELETE FROM tags;");
     projects.forEach((project, position) => insertProject.run(project.name, project.color, project.mood ?? "", position));
     for (const tag of tagMap.values()) insertTag.run(tag.name, tag.createdAt);
     normalizedDemos.forEach((demo) => insertDemo.run(
@@ -460,6 +473,9 @@ export function writeWorkspace(payload) {
     });
     shares.forEach((share) => {
       if (demoUuids.has(share.demoUuid) && friendIds.has(share.friendId)) insertShare.run(share.demoUuid, share.friendId, share.shareAudio === false ? 0 : 1);
+    });
+    projectShares.forEach((share) => {
+      if (projects.some((project) => project.name === share.project) && friendIds.has(share.friendId)) insertProjectShare.run(share.project, share.friendId, share.shareAudio === false ? 0 : 1);
     });
     for (const [project, ids] of Object.entries(orders)) {
       if (!Array.isArray(ids)) continue;
@@ -527,6 +543,7 @@ export function authenticatePeer(token) {
 function syncDemo(row, friendId) {
   const stored = getStoredFile("audio", Number(row.id));
   const share = database.prepare("SELECT share_audio FROM demo_shares WHERE demo_uuid = ? AND friend_id = ?").get(row.uuid, friendId);
+  const projectShare = database.prepare("SELECT share_audio FROM project_shares WHERE project = ? AND friend_id = ?").get(row.project, friendId);
   const demo = mapDemo(row);
   delete demo.id;
   delete demo.project;
@@ -534,14 +551,16 @@ function syncDemo(row, friendId) {
   delete demo.nextAction;
   delete demo.favorite;
   delete demo.sourceFriendId;
-  return { ...demo, audioAvailable: Boolean(stored && share?.share_audio), audioMimeType: stored?.mime_type };
+  return { ...demo, audioAvailable: Boolean(stored && (share?.share_audio || projectShare?.share_audio)), audioMimeType: stored?.mime_type };
 }
 
 export function buildSyncPackage(friendId) {
   const sharedRows = database.prepare(`
-    SELECT demos.* FROM demos JOIN demo_shares ON demo_shares.demo_uuid = demos.uuid
-    WHERE demo_shares.friend_id = ? AND demos.owner_id = ?
-  `).all(friendId, owner.id);
+    SELECT DISTINCT demos.* FROM demos
+    LEFT JOIN demo_shares ON demo_shares.demo_uuid = demos.uuid AND demo_shares.friend_id = ?
+    LEFT JOIN project_shares ON project_shares.project = demos.project AND project_shares.friend_id = ?
+    WHERE (demo_shares.friend_id IS NOT NULL OR project_shares.friend_id IS NOT NULL) AND demos.owner_id = ?
+  `).all(friendId, friendId, owner.id);
   const sharedUuids = new Set(sharedRows.map((row) => row.uuid));
   const remoteUuids = new Set(database.prepare("SELECT uuid FROM demos WHERE owner_id = ?").all(friendId).map((row) => row.uuid));
   const listens = listListens.all().map(mapListen).filter((listen) =>
@@ -551,6 +570,15 @@ export function buildSyncPackage(friendId) {
     sharedUuids.has(note.demoUuid) || (note.authorId === owner.id && remoteUuids.has(note.demoUuid)),
   );
   return { account: getAccount(), demos: sharedRows.map((row) => syncDemo(row, friendId)), listens, timedNotes };
+}
+
+function canFriendAccessDemo(friendId, demoUuid) {
+  return Boolean(database.prepare(`
+    SELECT 1 FROM demos
+    LEFT JOIN demo_shares ON demo_shares.demo_uuid = demos.uuid AND demo_shares.friend_id = ?
+    LEFT JOIN project_shares ON project_shares.project = demos.project AND project_shares.friend_id = ?
+    WHERE demos.uuid = ? AND demos.owner_id = ? AND (demo_shares.friend_id IS NOT NULL OR project_shares.friend_id IS NOT NULL)
+  `).get(friendId, friendId, demoUuid, owner.id));
 }
 
 function nextNumericId(table) {
@@ -584,12 +612,15 @@ export function mergeSyncPackage(friendId, payload) {
       const demo = database.prepare("SELECT id, owner_id FROM demos WHERE uuid = ?").get(listen.demoUuid);
       if (!demo) continue;
       const allowed = demo.owner_id === owner.id
-        ? listen.authorId === friend.id && listen.authorPublicKey === friend.public_key
+        ? canFriendAccessDemo(friend.id, listen.demoUuid) && listen.authorId === friend.id && listen.authorPublicKey === friend.public_key
         : demo.owner_id === friend.id;
       if (!allowed) continue;
       database.prepare(`
-        INSERT OR IGNORE INTO listens (id, event_uuid, demo_id, demo_uuid, author_id, author_name, author_public_key, verdict, note, listened_at, signature)
+        INSERT INTO listens (id, event_uuid, demo_id, demo_uuid, author_id, author_name, author_public_key, verdict, note, listened_at, signature)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT DO UPDATE SET verdict = excluded.verdict, note = excluded.note,
+          listened_at = excluded.listened_at, author_name = excluded.author_name, signature = excluded.signature
+        WHERE listens.demo_uuid = excluded.demo_uuid AND listens.author_id = excluded.author_id
       `).run(nextNumericId("listens"), listen.eventUuid, demo.id, listen.demoUuid, listen.authorId, listen.authorName || "Friend", listen.authorPublicKey, listen.verdict, listen.note ?? "", listen.listenedAt, listen.signature);
     }
     for (const note of incomingTimedNotes) {
@@ -599,12 +630,15 @@ export function mergeSyncPackage(friendId, payload) {
       const demo = database.prepare("SELECT id, owner_id FROM demos WHERE uuid = ?").get(note.demoUuid);
       if (!demo) continue;
       const allowed = demo.owner_id === owner.id
-        ? note.authorId === friend.id && note.authorPublicKey === friend.public_key
+        ? canFriendAccessDemo(friend.id, note.demoUuid) && note.authorId === friend.id && note.authorPublicKey === friend.public_key
         : demo.owner_id === friend.id;
       if (!allowed) continue;
       database.prepare(`
-        INSERT OR IGNORE INTO timed_notes (id, note_uuid, demo_id, demo_uuid, author_id, author_name, author_public_key, start_seconds, end_seconds, note, created_at, signature)
+        INSERT INTO timed_notes (id, note_uuid, demo_id, demo_uuid, author_id, author_name, author_public_key, start_seconds, end_seconds, note, created_at, signature)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT DO UPDATE SET start_seconds = excluded.start_seconds, end_seconds = excluded.end_seconds,
+          note = excluded.note, created_at = excluded.created_at, author_name = excluded.author_name, signature = excluded.signature
+        WHERE timed_notes.demo_uuid = excluded.demo_uuid AND timed_notes.author_id = excluded.author_id
       `).run(nextNumericId("timed_notes"), note.noteUuid, demo.id, note.demoUuid, note.authorId, note.authorName || "Friend", note.authorPublicKey, startSeconds, endSeconds, note.note.trim(), Number(note.createdAt) || Date.now(), note.signature);
     }
     database.prepare("UPDATE friends SET last_synced_at = ?, status = 'connected' WHERE id = ?").run(Date.now(), friendId);
@@ -627,9 +661,11 @@ export function markPeerAudioStored(demoId, fileName, sizeBytes) {
 
 export function canFriendAccessAudio(friendId, demoUuid) {
   return Boolean(database.prepare(`
-    SELECT 1 FROM demo_shares JOIN demos ON demos.uuid = demo_shares.demo_uuid
-    WHERE demo_shares.friend_id = ? AND demo_shares.demo_uuid = ? AND demo_shares.share_audio = 1 AND demos.owner_id = ?
-  `).get(friendId, demoUuid, owner.id));
+    SELECT 1 FROM demos
+    LEFT JOIN demo_shares ON demo_shares.demo_uuid = demos.uuid AND demo_shares.friend_id = ?
+    LEFT JOIN project_shares ON project_shares.project = demos.project AND project_shares.friend_id = ?
+    WHERE demos.uuid = ? AND demos.owner_id = ? AND (demo_shares.share_audio = 1 OR project_shares.share_audio = 1)
+  `).get(friendId, friendId, demoUuid, owner.id));
 }
 
 export function markFriendSyncError(friendId) {
