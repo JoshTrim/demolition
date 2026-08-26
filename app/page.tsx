@@ -2,6 +2,7 @@
 /* eslint-disable @next/next/no-img-element -- local blob URLs need native image rendering */
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import QRCode from "qrcode";
 
 type Status = "unheard" | "revisit" | "shaping" | "finished";
 type Demo = {
@@ -63,6 +64,13 @@ type FeedbackItem = {
   id: string; kind: "rating" | "note"; demoId: number; demoTitle: string; authorName: string;
   text: string; createdAt: number; receivedAt: number; verdict?: "up" | "down"; startSeconds?: number; endSeconds?: number;
 };
+type RemotePlaybackState = {
+  active: boolean; title: string; bpm: number; musicalKey: string; duration: number; currentTime: number;
+  playing: boolean; index: number; total: number; up: number; down: number; score: number;
+  vote?: "up" | "down"; hasPrevious: boolean; hasNext: boolean;
+};
+type RemoteCommand = { type: "play-pause" | "previous" | "next" | "skip" | "up" | "down" | "seek"; seconds?: number };
+type RemoteSession = { token: string; state: Partial<RemotePlaybackState>; commandSequence: number; command?: RemoteCommand; commands?: Array<{ sequence: number; command: RemoteCommand }>; createdAt: number; updatedAt: number; expiresAt: number };
 type StatsFilter = { type: "duration" | "duration-min" | "duration-max" | "bpm" | "bpm-exact" | "bpm-min" | "bpm-max" | "key" | "project" | "status" | "date"; value: string; label: string };
 type StatsTrendMetric = "count" | "runtime" | "bpm";
 type StatsComparisonMode = "projects" | "dates";
@@ -562,6 +570,75 @@ function mergeTags(current: TagDefinition[], names: string[]) {
   return next.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+function PhoneRemote({ token }: { token: string }) {
+  const [session, setSession] = useState<RemoteSession>();
+  const [error, setError] = useState("");
+  const [sending, setSending] = useState(false);
+  const [seeking, setSeeking] = useState(false);
+  const [seekDraft, setSeekDraft] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+    let timer = 0;
+    async function poll() {
+      try {
+        const next = await apiRequest<RemoteSession>(`/api/remote/sessions/${encodeURIComponent(token)}`);
+        if (!active) return;
+        setSession(next);
+        setError("");
+        if (!seeking) setSeekDraft(Number(next.state.currentTime || 0));
+      } catch (reason) {
+        if (active) setError(reason instanceof Error ? reason.message : "The desktop session is unavailable.");
+      } finally {
+        if (active) timer = window.setTimeout(poll, 500);
+      }
+    }
+    poll();
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [seeking, token]);
+
+  async function send(command: RemoteCommand) {
+    if (sending) return;
+    setSending(true);
+    try {
+      const next = await apiRequest<RemoteSession>(`/api/remote/sessions/${encodeURIComponent(token)}/commands`, { method: "POST", body: JSON.stringify(command) });
+      setSession(next);
+      setError("");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "The command could not be sent.");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  const state = session?.state;
+  const duration = Number(state?.duration || 0);
+  const currentTime = seeking ? seekDraft : Number(state?.currentTime || 0);
+  if (!session && !error) return <main className="phone-remote phone-remote-loading"><span>✳</span><strong>Connecting to Listen mode…</strong></main>;
+  if (!session) return <main className="phone-remote phone-remote-error"><span>×</span><strong>Remote unavailable</strong><p>{error}</p></main>;
+  return <main className="phone-remote">
+    <header><div><span className="brand-mark">✳</span><strong>demolition</strong></div><span className={`remote-connection ${error ? "error" : ""}`}>{error ? "Connection interrupted" : "Connected"}</span></header>
+    <section className="phone-now-playing">
+      <div className="eyebrow">DESKTOP PLAYBACK · {Number(state?.index || 0) + 1} / {Number(state?.total || 0)}</div>
+      <h1>{state?.title || "Waiting for a track"}</h1>
+      <p>{state?.bpm ? `${state.bpm} BPM` : "BPM —"} · {state?.musicalKey || "—"} · {formatDuration(duration)}</p>
+      {!state?.active && <div className="phone-session-ended">Listen mode is not active on the computer.</div>}
+    </section>
+    <section className="phone-transport" aria-label="Desktop transport controls">
+      <div className="phone-time"><strong>{formatDuration(currentTime)}</strong><span>{formatDuration(duration)}</span></div>
+      <input type="range" min="0" max={duration || 0} step="0.1" value={Math.min(currentTime, duration || 0)} disabled={!state?.active || !duration} aria-label="Seek desktop playback" onPointerDown={() => setSeeking(true)} onChange={(event) => setSeekDraft(Number(event.target.value))} onPointerUp={(event) => { const seconds = Number(event.currentTarget.value); setSeeking(false); setSeekDraft(seconds); send({ type: "seek", seconds }); }} onKeyUp={(event) => { if (event.key.startsWith("Arrow")) send({ type: "seek", seconds: Number(event.currentTarget.value) }); }} />
+      <div className="phone-nudge"><button disabled={!state?.active || sending} onClick={() => send({ type: "seek", seconds: Math.max(0, currentTime - 10) })}>−10s</button><button disabled={!state?.active || sending} onClick={() => send({ type: "seek", seconds: Math.min(duration, currentTime + 10) })}>+10s</button></div>
+      <div className="phone-main-transport"><button disabled={!state?.active || !state.hasPrevious || sending} onClick={() => send({ type: "previous" })} aria-label="Previous track">←<small>Previous</small></button><button className="phone-play" disabled={!state?.active || sending} onClick={() => send({ type: "play-pause" })} aria-label={state?.playing ? "Pause desktop playback" : "Play desktop playback"}>{state?.playing ? "Ⅱ" : "▶"}</button><button disabled={!state?.active || !state.hasNext || sending} onClick={() => send({ type: "next" })} aria-label="Next track">→<small>Next</small></button></div>
+    </section>
+    <section className="phone-score" aria-label="Score this track">
+      <div><span>SCORE</span><strong>{Number(state?.score || 0) > 0 ? `+${state?.score}` : state?.score || 0}</strong><small>{state?.up || 0} up · {state?.down || 0} down</small></div>
+      <div className="phone-votes"><button className={state?.vote === "down" ? "selected" : ""} aria-pressed={state?.vote === "down"} disabled={!state?.active || sending} onClick={() => send({ type: "down" })}><b>↓</b><span>Thumbs down</span></button><button className={state?.vote === "up" ? "selected" : ""} aria-pressed={state?.vote === "up"} disabled={!state?.active || sending} onClick={() => send({ type: "up" })}><b>↑</b><span>Thumbs up</span></button></div>
+    </section>
+    <button className="phone-skip" disabled={!state?.active || !state.hasNext || sending} onClick={() => send({ type: "skip" })}>Skip without rating <span>→</span></button>
+    <footer>Audio remains on the computer.</footer>
+  </main>;
+}
+
 export default function Home() {
   const [demos, setDemos] = useState(initialDemos);
   const [projects, setProjects] = useState(initialProjects);
@@ -622,6 +699,13 @@ export default function Home() {
   const [storageInfo, setStorageInfo] = useState<StorageInfo>({ usage: 0, quota: 0, persisted: false });
   const [storageProgress, setStorageProgress] = useState("");
   const [rapidMode, setRapidMode] = useState(false);
+  const [remoteToken, setRemoteToken] = useState("");
+  const [remoteSession, setRemoteSession] = useState<RemoteSession>();
+  const [showPhoneRemote, setShowPhoneRemote] = useState(false);
+  const [remoteBaseUrl, setRemoteBaseUrl] = useState("");
+  const [remotePairingUrl, setRemotePairingUrl] = useState("");
+  const [remoteQrData, setRemoteQrData] = useState("");
+  const [remoteStatus, setRemoteStatus] = useState("");
   const [rapidIndex, setRapidIndex] = useState(0);
   const [rapidIds, setRapidIds] = useState<number[]>([]);
   const [rapidNote, setRapidNote] = useState("");
@@ -668,16 +752,38 @@ export default function Home() {
   const rapidAudioFetchesRef = useRef(new Map<number, Promise<RapidAudioEntry | undefined>>());
   const rapidAudioSessionRef = useRef(0);
   const rapidActionsRef = useRef({ previous: () => undefined, next: () => undefined, down: () => undefined, up: () => undefined });
+  const remoteCommandActionsRef = useRef<(command: RemoteCommand) => void>(() => undefined);
+  const remoteLastCommandRef = useRef(0);
+  const remoteStateRef = useRef<RemotePlaybackState | undefined>(undefined);
   const activeFilenameConflict = pendingBulkImport?.conflicts[0];
   const conflictExistingDemo = activeFilenameConflict?.existing.kind === "demo" ? demos.find((demo) => demo.id === activeFilenameConflict.existing.demoId) : undefined;
   const conflictExistingIncoming = activeFilenameConflict?.existing.kind === "incoming" ? activeFilenameConflict.existing.audio : undefined;
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
+      setRemoteToken(new URLSearchParams(window.location.search).get("remote") || "");
       setTodayLabel(new Intl.DateTimeFormat("en-AU", { weekday: "long", day: "numeric", month: "long", year: "numeric" }).format(new Date()).toUpperCase());
     });
     return () => window.cancelAnimationFrame(frame);
   }, []);
+
+  useEffect(() => {
+    if (!remoteSession || !remoteBaseUrl) return;
+    let active = true;
+    try {
+      const url = new URL(remoteBaseUrl);
+      url.searchParams.set("remote", remoteSession.token);
+      url.hash = "";
+      const value = url.toString();
+      queueMicrotask(() => { if (active) setRemotePairingUrl(value); });
+      QRCode.toDataURL(value, { width: 360, margin: 1, errorCorrectionLevel: "M", color: { dark: "#151713", light: "#f0e1c2" } }).then((data) => {
+        if (active) { setRemoteQrData(data); setRemoteStatus(""); }
+      }).catch(() => { if (active) setRemoteStatus("The QR code could not be generated."); });
+    } catch {
+      queueMicrotask(() => { if (active) { setRemotePairingUrl(""); setRemoteQrData(""); setRemoteStatus("Enter a complete phone-accessible URL."); } });
+    }
+    return () => { active = false; };
+  }, [remoteBaseUrl, remoteSession]);
 
   function clearRapidAudioCache() {
     for (const entry of rapidAudioCacheRef.current.values()) URL.revokeObjectURL(entry.url);
@@ -1175,6 +1281,12 @@ export default function Home() {
     return scores;
   }, new Map<string, { id: string; name: string; up: number; down: number; score: number }>()).values()].sort((a, b) => Number(b.id === account?.id) - Number(a.id === account?.id) || b.score - a.score || a.name.localeCompare(b.name)) : [];
   const rapidStats = rapidDemo ? statsFor(rapidDemo.id) : statsFor(0);
+  remoteStateRef.current = {
+    active: Boolean(rapidMode && rapidDemo), title: rapidDemo?.title || "", bpm: rapidDemo?.bpm || 0,
+    musicalKey: rapidDemo?.key || "—", duration: rapidDisplayDuration, currentTime: rapidCurrentTime,
+    playing: rapidPlaying, index: rapidIndex, total: rapidIds.length, up: rapidStats.up, down: rapidStats.down,
+    score: rapidStats.score, vote: rapidVote, hasPrevious: rapidIndex > 0, hasNext: rapidIndex < rapidIds.length - 1,
+  };
   const rapidTimedNotes = rapidDemo ? timedNotes.filter((note) => note.demoId === rapidDemo.id).sort((a, b) => a.startSeconds - b.startSeconds) : [];
   const selectedActiveNoteUuids = new Set(selectedTimedNotes.filter((note) => detailCurrentTime >= note.startSeconds && detailCurrentTime <= note.endSeconds).map((note) => note.noteUuid));
   const rapidActiveNoteUuids = new Set(rapidTimedNotes.filter((note) => rapidCurrentTime >= note.startSeconds && rapidCurrentTime <= note.endSeconds).map((note) => note.noteUuid));
@@ -1760,6 +1872,30 @@ export default function Home() {
     setRapidMode(true);
   }
 
+  async function openPhoneRemote() {
+    setShowPhoneRemote(true);
+    setRemoteStatus("Preparing phone remote…");
+    if (!remoteBaseUrl) setRemoteBaseUrl(window.location.origin);
+    if (remoteSession && remoteSession.expiresAt > Date.now()) { setRemoteStatus(""); return; }
+    try {
+      const session = await apiRequest<RemoteSession>("/api/remote/sessions", { method: "POST", body: "{}" });
+      remoteLastCommandRef.current = session.commandSequence;
+      setRemoteSession(session);
+      setRemoteStatus("");
+    } catch (error) {
+      setRemoteStatus(error instanceof Error ? error.message : "The phone remote could not be created.");
+    }
+  }
+
+  async function closePhoneRemote() {
+    const token = remoteSession?.token;
+    setRemoteSession(undefined);
+    setRemoteQrData("");
+    setRemotePairingUrl("");
+    setShowPhoneRemote(false);
+    if (token) await apiRequest(`/api/remote/sessions/${encodeURIComponent(token)}`, { method: "DELETE" }).catch(() => undefined);
+  }
+
   function resetRapidResponse() {
     setRapidNote("");
     setRapidVote(undefined);
@@ -2086,6 +2222,44 @@ export default function Home() {
     };
   });
 
+  useEffect(() => {
+    remoteCommandActionsRef.current = (command) => {
+      if (!rapidMode) return;
+      if (command.type === "play-pause") toggleRapidPlayback();
+      else if (command.type === "previous") previousRapid();
+      else if (command.type === "next" || command.type === "skip") advanceRapid();
+      else if (command.type === "up") recordListen("up");
+      else if (command.type === "down") recordListen("down");
+      else if (command.type === "seek" && Number.isFinite(command.seconds)) seekRapid(Number(command.seconds));
+    };
+  });
+
+  useEffect(() => {
+    const token = remoteSession?.token;
+    if (!token) return;
+    let active = true;
+    let timer = 0;
+    async function publishAndPoll() {
+      try {
+        const session = await apiRequest<RemoteSession>(`/api/remote/sessions/${encodeURIComponent(token)}`, { method: "PUT", body: JSON.stringify({ state: remoteStateRef.current || { active: false }, afterSequence: remoteLastCommandRef.current }) });
+        if (!active) return;
+        setRemoteSession(session);
+        setRemoteStatus("");
+        const queued = (session.commands || []).find((item) => item.sequence > remoteLastCommandRef.current);
+        if (queued) {
+          remoteLastCommandRef.current = queued.sequence;
+          remoteCommandActionsRef.current(queued.command);
+        }
+      } catch (error) {
+        if (active) setRemoteStatus(error instanceof Error ? error.message : "The phone remote lost contact with the local server.");
+      } finally {
+        if (active) timer = window.setTimeout(publishAndPoll, 350);
+      }
+    }
+    publishAndPoll();
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [remoteSession?.token]);
+
   function changeRapidProject(nextProject: string) {
     if (!rapidDemo) return;
     const previousProject = rapidDemo.project;
@@ -2390,6 +2564,8 @@ export default function Home() {
 
   const currentTitle = view === "feedback" ? "Friend feedback" : view === "stats" ? "Stats overview" : view === "revisit" ? "Revisit queue" : view === "project" ? project : "Demo library";
 
+  if (remoteToken) return <PhoneRemote token={remoteToken} />;
+
   return (
     <main className="app-shell">
       <aside className="sidebar">
@@ -2549,7 +2725,9 @@ export default function Home() {
         </div>
       </section>
 
-      {rapidMode && rapidDemo && <div className="rapid-backdrop"><section className="rapid-session" aria-label="Listen mode"><header><div><span className="eyebrow">LISTEN MODE</span><strong>{rapidIndex + 1} / {rapidIds.length}</strong></div><button onClick={() => setRapidMode(false)} aria-label="End listen mode">×</button></header><div className="rapid-body"><div className="rapid-main"><div className="rapid-title"><div><h2>{rapidDemo.title}</h2><p>{rapidDemo.bpm ? `${rapidDemo.bpm} BPM` : "BPM unknown"} · {rapidDemo.key} · {rapidDemo.duration}</p></div><div className="rapid-title-actions"><button className={`favorite-button ${rapidDemo.favorite ? "active" : ""}`} aria-pressed={rapidDemo.favorite} onClick={() => toggleFavorite(rapidDemo.id)}>{rapidDemo.favorite ? "★ Favourite" : "☆ Favourite"}</button><select aria-label="Assign project" value={rapidDemo.project} onChange={(event) => changeRapidProject(event.target.value)}>{projectNames.map((name) => <option key={name}>{name}</option>)}</select></div></div>{rapidQuickTags}{rapidPreloadUrl && <audio ref={rapidPreloadAudioRef} className="rapid-preload-audio" src={rapidPreloadUrl} preload="auto" aria-hidden="true"><track kind="captions" src="data:text/vtt,WEBVTT" srcLang="en" label="Preloaded demo audio" /></audio>}{audioUrl ? <audio key={rapidDemo.id} ref={rapidAudioRef} className="rapid-audio-engine" src={audioUrl} onError={() => { setRapidPlaying(false); setPlaybackError("This audio copy could not be played by the browser."); }} onCanPlay={(event) => { if (event.currentTarget.paused) playRapidAudio(event.currentTarget); }} onEnded={(event) => handleRapidEnded(event.currentTarget)} onLoadedMetadata={(event) => handleRapidLoadedMetadata(event.currentTarget)} onDurationChange={(event) => handleRapidLoadedMetadata(event.currentTarget)} onPlay={() => { setRapidPlaying(true); setPlaybackError(""); }} onPause={() => setRapidPlaying(false)} onTimeUpdate={(event) => handleRapidTimeUpdate(event.currentTarget)} preload="auto"><track kind="captions" src="data:text/vtt,WEBVTT" srcLang="en" label="Demo audio" /></audio> : <div className="rapid-no-audio">{playbackError || "No local audio copy attached"}</div>}{rapidAnnotationTransport}<div className="rapid-vote-summary"><span>{rapidStats.up} up</span><span>{rapidStats.down} down</span><strong>Score {rapidStats.score > 0 ? `+${rapidStats.score}` : rapidStats.score}</strong></div><label className="rapid-note">Note for this listen<textarea value={rapidNote} onChange={(event) => updateRapidNote(event.target.value)} rows={3} placeholder="Optional note saved with your vote" /></label></div></div><footer><div className="rapid-controls"><button className="rapid-previous" disabled={!rapidIndex} onClick={previousRapid}><span>←</span> Previous <kbd>H</kbd></button><button className="thumb-down" aria-pressed={rapidDownSelected} onClick={() => recordListen("down")}><span>↓</span> Thumbs down <kbd>J</kbd></button><button className="thumb-up" aria-pressed={rapidUpSelected} onClick={() => recordListen("up")}><span>↑</span> Thumbs up <kbd>K</kbd></button><button className="rapid-next-track" aria-label="Skip without rating" onClick={advanceRapid}>Skip <span>→</span> <kbd>L</kbd></button></div></footer></section></div>}
+      {rapidMode && rapidDemo && <div className="rapid-backdrop"><section className="rapid-session" aria-label="Listen mode"><header><div><span className="eyebrow">LISTEN MODE</span><strong>{rapidIndex + 1} / {rapidIds.length}</strong></div><div className="rapid-header-actions"><button className="phone-remote-button" onClick={openPhoneRemote}>▦ Phone remote</button><button onClick={() => setRapidMode(false)} aria-label="End listen mode">×</button></div></header><div className="rapid-body"><div className="rapid-main"><div className="rapid-title"><div><h2>{rapidDemo.title}</h2><p>{rapidDemo.bpm ? `${rapidDemo.bpm} BPM` : "BPM unknown"} · {rapidDemo.key} · {rapidDemo.duration}</p></div><div className="rapid-title-actions"><button className={`favorite-button ${rapidDemo.favorite ? "active" : ""}`} aria-pressed={rapidDemo.favorite} onClick={() => toggleFavorite(rapidDemo.id)}>{rapidDemo.favorite ? "★ Favourite" : "☆ Favourite"}</button><select aria-label="Assign project" value={rapidDemo.project} onChange={(event) => changeRapidProject(event.target.value)}>{projectNames.map((name) => <option key={name}>{name}</option>)}</select></div></div>{rapidQuickTags}{rapidPreloadUrl && <audio ref={rapidPreloadAudioRef} className="rapid-preload-audio" src={rapidPreloadUrl} preload="auto" aria-hidden="true"><track kind="captions" src="data:text/vtt,WEBVTT" srcLang="en" label="Preloaded demo audio" /></audio>}{audioUrl ? <audio key={rapidDemo.id} ref={rapidAudioRef} className="rapid-audio-engine" src={audioUrl} onError={() => { setRapidPlaying(false); setPlaybackError("This audio copy could not be played by the browser."); }} onCanPlay={(event) => { if (event.currentTarget.paused) playRapidAudio(event.currentTarget); }} onEnded={(event) => handleRapidEnded(event.currentTarget)} onLoadedMetadata={(event) => handleRapidLoadedMetadata(event.currentTarget)} onDurationChange={(event) => handleRapidLoadedMetadata(event.currentTarget)} onPlay={() => { setRapidPlaying(true); setPlaybackError(""); }} onPause={() => setRapidPlaying(false)} onTimeUpdate={(event) => handleRapidTimeUpdate(event.currentTarget)} preload="auto"><track kind="captions" src="data:text/vtt,WEBVTT" srcLang="en" label="Demo audio" /></audio> : <div className="rapid-no-audio">{playbackError || "No local audio copy attached"}</div>}{rapidAnnotationTransport}<div className="rapid-vote-summary"><span>{rapidStats.up} up</span><span>{rapidStats.down} down</span><strong>Score {rapidStats.score > 0 ? `+${rapidStats.score}` : rapidStats.score}</strong></div><label className="rapid-note">Note for this listen<textarea value={rapidNote} onChange={(event) => updateRapidNote(event.target.value)} rows={3} placeholder="Optional note saved with your vote" /></label></div></div><footer><div className="rapid-controls"><button className="rapid-previous" disabled={!rapidIndex} onClick={previousRapid}><span>←</span> Previous <kbd>H</kbd></button><button className="thumb-down" aria-pressed={rapidDownSelected} onClick={() => recordListen("down")}><span>↓</span> Thumbs down <kbd>J</kbd></button><button className="thumb-up" aria-pressed={rapidUpSelected} onClick={() => recordListen("up")}><span>↑</span> Thumbs up <kbd>K</kbd></button><button className="rapid-next-track" aria-label="Skip without rating" onClick={advanceRapid}>Skip <span>→</span> <kbd>L</kbd></button></div></footer></section></div>}
+
+      {showPhoneRemote && <div className="modal-backdrop"><section className="modal phone-pair-modal" aria-label="Pair phone remote"><button type="button" className="modal-close" onClick={() => setShowPhoneRemote(false)}>×</button><div className="eyebrow">LISTEN MODE REMOTE</div><h2>Control from your phone</h2><p>Scan this code. Playback stays on this computer while the phone controls transport and scoring.</p>{remoteQrData ? <img className="remote-qr" src={remoteQrData} alt="QR code for the phone remote" /> : <div className="remote-qr-loading">Generating code…</div>}<label>Phone-accessible app URL<input value={remoteBaseUrl} onChange={(event) => setRemoteBaseUrl(event.target.value)} placeholder="https://demolition.example.com" /></label>{/^(https?:\/\/)?(localhost|127\.0\.0\.1)(:|\/|$)/i.test(remoteBaseUrl) && <div className="remote-url-warning">localhost points back to the phone. Use your Demolition domain, LAN address, or WireGuard address.</div>}{remotePairingUrl && <div className="remote-direct-link"><input readOnly value={remotePairingUrl} aria-label="Phone remote link" /><button onClick={() => navigator.clipboard.writeText(remotePairingUrl).then(() => setRemoteStatus("Remote link copied."))}>Copy</button></div>}{remoteStatus && <div className="remote-pair-status" role="status">{remoteStatus}</div>}<div className="remote-pair-actions"><button className="secondary-button" onClick={() => setShowPhoneRemote(false)}>Keep running</button><button className="remote-end-button" disabled={!remoteSession} onClick={closePhoneRemote}>End remote</button></div><small className="remote-expiry">The pairing expires after eight hours. The phone receives track metadata only; it does not stream the audio file.</small></section></div>}
 
       {showAccount && account && <div className="modal-backdrop"><section className="modal mesh-modal" aria-label="Friends and sync"><button type="button" className="modal-close" onClick={() => setShowAccount(false)}>×</button><div className="eyebrow">LOCAL IDENTITY</div><h2>Friends &amp; sync</h2><form className="account-form" onSubmit={saveAccount}><div className="modal-fields"><label>Display name<input name="displayName" defaultValue={account.displayName} required /></label><label>Mesh VPN URL<input name="peerUrl" type="url" defaultValue={account.peerUrl} placeholder="http://100.64.0.10:3001" required /></label></div><span className="field-hint">Use this machine&apos;s stable VPN address. Start the server with DEMOLITION_API_HOST set to 0.0.0.0 so friends can reach it.</span><button className="secondary-button" type="submit">Save identity</button></form><div className="mesh-grid"><section><div className="detail-section-head"><span>INVITE A FRIEND</span></div><p>Create a single-use code and send it through a channel you trust.</p><button className="secondary-button" onClick={createInvite}>Create invitation</button>{pairingCode && <div className="invite-code"><textarea readOnly value={pairingCode} rows={4} aria-label="Pairing invitation code" /><button onClick={() => navigator.clipboard.writeText(pairingCode).then(() => setMeshProgress("Invitation copied."))}>Copy</button></div>}</section><section><div className="detail-section-head"><span>JOIN A FRIEND</span></div><form onSubmit={pairFriend}><textarea name="code" rows={4} placeholder="Paste their invitation code" aria-label="Friend invitation code" required /><button className="secondary-button" type="submit">Pair instance</button></form></section></div><div className="friend-list"><div className="detail-section-head"><span>CONNECTED FRIENDS</span><div><small>{friends.length}</small><button type="button" disabled={!friends.length || syncingFriendIds.length > 0} onClick={syncAllFriends}>Sync all</button></div></div>{friends.map((friend) => <article key={friend.id}><span className={`peer-status ${friend.status}`} /><div><strong>{friend.displayName}</strong><small>{friend.peerUrl}</small><small>{friend.lastSyncedAt ? `Last synced ${relativeDate(friend.lastSyncedAt)}` : "Not synced yet"}</small></div><button disabled={syncingFriendIds.includes(friend.id)} onClick={() => syncFriend(friend)}>{syncingFriendIds.includes(friend.id) ? "Syncing…" : "Sync now"}</button><button className="disconnect-peer" disabled={syncingFriendIds.includes(friend.id)} onClick={() => disconnectFriend(friend)} aria-label={`Disconnect ${friend.displayName}`}>×</button></article>)}{friends.length === 0 && <div className="friend-empty">No friends connected.</div>}</div>{meshProgress && <div className="mesh-progress" role="status">{meshProgress}</div>}<div className="mesh-security">Peer traffic stays on the VPN. Demolition also requires a separate pairing token and verifies signed ratings and timed notes.</div></section></div>}
 

@@ -55,6 +55,17 @@ test("uses the local SQLite and managed-file backend", async () => {
     database.markFeedbackSeen(1234);
     const state = database.readWorkspace();
     if (state.projects[0].name !== "Album" || state.tags[0].name !== "test" || state.demos[0].creationDate !== "2019-04-12" || state.demos[0].uuid !== "demo-one" || state.demos[0].favorite !== true || state.demos[0].trimStartSeconds !== 4.5 || state.demos[0].trimEndSeconds !== 52.25 || state.orders.Album[0] !== 1 || state.listens[0].verdict !== "up" || state.listens[0].note !== "Strong chorus" || state.listens[0].authorId !== account.id || !state.listens[0].receivedAt || !state.listens[0].signature || state.timedNotes[0].endSeconds !== 18.5 || !state.timedNotes[0].receivedAt || !state.timedNotes[0].signature || state.account.feedbackSeenAt !== 1234) process.exit(1);
+    const remote = database.createRemoteSession();
+    database.updateRemoteSessionState(remote.token, { active: true, title: "Test", currentTime: 12 }, 0);
+    database.sendRemoteCommand(remote.token, { type: "play-pause" });
+    database.sendRemoteCommand(remote.token, { type: "up" });
+    let pending = database.getRemoteSession(remote.token, 0);
+    if (pending.state.title !== "Test" || pending.commands.length !== 2 || pending.commands[0].sequence !== 1 || pending.commands[1].command.type !== "up") process.exit(1);
+    database.updateRemoteSessionState(remote.token, { active: true, title: "Test", currentTime: 13 }, 1);
+    pending = database.getRemoteSession(remote.token, 1);
+    if (pending.commands.length !== 1 || pending.commands[0].sequence !== 2) process.exit(1);
+    database.closeRemoteSession(remote.token);
+    try { database.getRemoteSession(remote.token); process.exit(1); } catch {}
   `;
   await run(process.execPath, ["--input-type=module", "-e", script], {
     cwd: temporaryDirectory,
@@ -202,6 +213,11 @@ test("keeps local data out of version control", async () => {
   assert.match(page, /feedbackItems/);
   assert.match(page, /openFeedback/);
   assert.match(page, /Friend feedback/);
+  assert.match(page, /Phone remote/);
+  assert.match(page, /QRCode\.toDataURL/);
+  assert.match(page, /\/api\/remote\/sessions/);
+  assert.match(page, /className="phone-main-transport"/);
+  assert.match(page, /Audio remains on the computer\./);
   assert.match(page, /TIMED NOTES/);
   assert.match(page, /onPointerDown=\{beginTimedNoteRange\}/);
   assert.match(page, /waveformPeaks/);

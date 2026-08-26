@@ -163,6 +163,25 @@ database.exec(`
     PRIMARY KEY (project, friend_id),
     FOREIGN KEY (friend_id) REFERENCES friends(id) ON DELETE CASCADE
   );
+
+  CREATE TABLE IF NOT EXISTS remote_sessions (
+    token TEXT PRIMARY KEY,
+    state_json TEXT NOT NULL DEFAULT '{}',
+    command_sequence INTEGER NOT NULL DEFAULT 0,
+    command_json TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS remote_commands (
+    session_token TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    command_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (session_token, sequence),
+    FOREIGN KEY (session_token) REFERENCES remote_sessions(token) ON DELETE CASCADE
+  );
 `);
 
 function addColumn(table, column, definition) {
@@ -200,6 +219,7 @@ database.exec(`
   CREATE INDEX IF NOT EXISTS idx_timed_notes_demo_range ON timed_notes(demo_uuid, start_seconds, end_seconds);
   CREATE INDEX IF NOT EXISTS idx_shares_friend ON demo_shares(friend_id, demo_uuid);
   CREATE INDEX IF NOT EXISTS idx_project_shares_friend ON project_shares(friend_id, project);
+  CREATE INDEX IF NOT EXISTS idx_remote_sessions_expiry ON remote_sessions(expires_at);
   PRAGMA optimize;
 `);
 
@@ -353,6 +373,71 @@ export function markFeedbackSeen(seenAt = Date.now()) {
   const timestamp = Math.max(0, Number(seenAt) || Date.now());
   database.prepare("UPDATE owner_identity SET feedback_seen_at = MAX(feedback_seen_at, ?) WHERE id = ?").run(timestamp, owner.id);
   return getAccount();
+}
+
+function mapRemoteSession(row, afterSequence = 0) {
+  if (!row) return undefined;
+  const commands = database.prepare("SELECT sequence, command_json FROM remote_commands WHERE session_token = ? AND sequence > ? ORDER BY sequence").all(row.token, Number(afterSequence) || 0).map((item) => ({ sequence: Number(item.sequence), command: JSON.parse(item.command_json) }));
+  return {
+    token: row.token,
+    state: JSON.parse(row.state_json || "{}"),
+    commandSequence: Number(row.command_sequence),
+    command: row.command_json ? JSON.parse(row.command_json) : undefined,
+    commands,
+    createdAt: Number(row.created_at), updatedAt: Number(row.updated_at), expiresAt: Number(row.expires_at),
+  };
+}
+
+function requireRemoteSession(token) {
+  const normalized = String(token || "");
+  const row = database.prepare("SELECT * FROM remote_sessions WHERE token = ?").get(normalized);
+  if (!row || Number(row.expires_at) <= Date.now()) {
+    if (row) database.prepare("DELETE FROM remote_sessions WHERE token = ?").run(normalized);
+    const error = new Error("This phone remote session has expired");
+    error.statusCode = 404;
+    throw error;
+  }
+  return row;
+}
+
+export function createRemoteSession() {
+  const now = Date.now();
+  database.prepare("DELETE FROM remote_sessions WHERE expires_at <= ?").run(now);
+  const token = randomBytes(24).toString("base64url");
+  const expiresAt = now + 8 * 60 * 60 * 1000;
+  database.prepare("INSERT INTO remote_sessions (token, created_at, updated_at, expires_at) VALUES (?, ?, ?, ?)").run(token, now, now, expiresAt);
+  return mapRemoteSession(requireRemoteSession(token));
+}
+
+export function getRemoteSession(token, afterSequence = 0) {
+  return mapRemoteSession(requireRemoteSession(token), afterSequence);
+}
+
+export function updateRemoteSessionState(token, state, afterSequence = 0) {
+  requireRemoteSession(token);
+  database.prepare("UPDATE remote_sessions SET state_json = ?, updated_at = ? WHERE token = ?").run(JSON.stringify(state ?? {}), Date.now(), token);
+  if (Number(afterSequence) > 0) database.prepare("DELETE FROM remote_commands WHERE session_token = ? AND sequence <= ?").run(token, Number(afterSequence));
+  return getRemoteSession(token, afterSequence);
+}
+
+export function sendRemoteCommand(token, command) {
+  requireRemoteSession(token);
+  const now = Date.now();
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    database.prepare("UPDATE remote_sessions SET command_sequence = command_sequence + 1, command_json = ?, updated_at = ? WHERE token = ?").run(JSON.stringify(command), now, token);
+    const sequence = Number(database.prepare("SELECT command_sequence FROM remote_sessions WHERE token = ?").get(token).command_sequence);
+    database.prepare("INSERT INTO remote_commands (session_token, sequence, command_json, created_at) VALUES (?, ?, ?, ?)").run(token, sequence, JSON.stringify(command), now);
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+  return getRemoteSession(token, Number.MAX_SAFE_INTEGER);
+}
+
+export function closeRemoteSession(token) {
+  database.prepare("DELETE FROM remote_sessions WHERE token = ?").run(String(token || ""));
 }
 
 export function readWorkspace() {

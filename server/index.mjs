@@ -6,11 +6,11 @@ import path from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import {
-  acceptPairing, audioDirectory, authenticatePeer, buildSyncPackage, canFriendAccessAudio,
-  createPairingInvite, databasePath, dataDirectory, decodePairingInvite, demoByUuid, friendWithSecrets,
-  getAccount, getStoredFile, markFeedbackSeen, markFriendSyncError, markPeerAudioStored, mediaDirectory,
+  acceptPairing, audioDirectory, authenticatePeer, buildSyncPackage, canFriendAccessAudio, closeRemoteSession,
+  createPairingInvite, createRemoteSession, databasePath, dataDirectory, decodePairingInvite, demoByUuid, friendWithSecrets,
+  getAccount, getRemoteSession, getStoredFile, markFeedbackSeen, markFriendSyncError, markPeerAudioStored, mediaDirectory,
   mergeSyncPackage, readWorkspace, removeFriend, removeStoredFile, saveStoredFile,
-  storedFileBytes, updateAccount, upsertFriend, writeWorkspace,
+  sendRemoteCommand, storedFileBytes, updateAccount, updateRemoteSessionState, upsertFriend, writeWorkspace,
 } from "./database.mjs";
 
 const port = Number(process.env.DEMOLITION_API_PORT || 3001);
@@ -360,6 +360,19 @@ const server = createServer(async (req, res) => {
     }
     if (req.method === "PUT" && url.pathname === "/api/account") return sendJson(req, res, 200, updateAccount(await readJson(req)));
     if (req.method === "POST" && url.pathname === "/api/feedback/seen") return sendJson(req, res, 200, markFeedbackSeen((await readJson(req)).seenAt));
+    if (req.method === "POST" && url.pathname === "/api/remote/sessions") return sendJson(req, res, 201, createRemoteSession());
+    const remoteCommandRoute = url.pathname.match(/^\/api\/remote\/sessions\/([A-Za-z0-9_-]{24,80})\/commands$/);
+    if (req.method === "POST" && remoteCommandRoute) {
+      const command = await readJson(req);
+      const allowed = new Set(["play-pause", "previous", "next", "skip", "up", "down", "seek"]);
+      if (!allowed.has(command?.type)) return sendJson(req, res, 400, { error: "Unsupported remote command" });
+      if (command.type === "seek" && (!Number.isFinite(Number(command.seconds)) || Number(command.seconds) < 0 || Number(command.seconds) > 86_400)) return sendJson(req, res, 400, { error: "Invalid seek position" });
+      return sendJson(req, res, 202, sendRemoteCommand(remoteCommandRoute[1], command));
+    }
+    const remoteSessionRoute = url.pathname.match(/^\/api\/remote\/sessions\/([A-Za-z0-9_-]{24,80})$/);
+    if (remoteSessionRoute && req.method === "GET") return sendJson(req, res, 200, getRemoteSession(remoteSessionRoute[1], Number(url.searchParams.get("after") || 0)));
+    if (remoteSessionRoute && req.method === "PUT") { const body = await readJson(req); return sendJson(req, res, 200, updateRemoteSessionState(remoteSessionRoute[1], body.state, body.afterSequence)); }
+    if (remoteSessionRoute && req.method === "DELETE") { closeRemoteSession(remoteSessionRoute[1]); return sendJson(req, res, 200, { ok: true }); }
     if (req.method === "POST" && url.pathname === "/api/invites") return sendJson(req, res, 201, { code: createPairingInvite() });
     if (req.method === "POST" && url.pathname === "/api/friends/pair") return sendJson(req, res, 201, { friend: await pairWithInvite((await readJson(req)).code) });
     const syncRoute = url.pathname.match(/^\/api\/friends\/([^/]+)\/sync$/);

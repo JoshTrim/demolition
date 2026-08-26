@@ -58,6 +58,12 @@ Tracks can be shared individually from their detail panel, or an entire project 
 
 Friend ratings and timed notes are collected in **Friend feedback**. The inbox records when feedback first reaches the local instance, shows an unread count, supports rating/note filters and search, and links each item back to its demo. Opening the inbox saves its read position in SQLite.
 
+## Phone remote
+
+While Listen mode is open on the computer, choose **Phone remote** and scan the QR code. The phone opens a compact controller for play/pause, seeking, previous/next, skip, and thumbs-up/down scoring. Audio continues to play from the computer.
+
+The URL encoded in the QR code must be reachable from the phone. When using the home-server deployment, use the normal Demolition domain. For direct local development, start Demolition with trusted LAN access and replace `localhost` in the pairing panel with the computer's LAN address. Remote sessions and queued commands are stored in SQLite, remain inside the Demolition instance, and expire after eight hours.
+
 For a production-style local run:
 
 ```bash
