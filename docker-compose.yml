@@ -2,39 +2,25 @@ name: demolition
 
 services:
   demolition:
-    build:
-      context: .
+    image: ${DEMOLITION_IMAGE:-ghcr.io/joshtrim/demolition:0.1.1}
     init: true
     restart: unless-stopped
     user: "${DEMOLITION_UID:-1000}:${DEMOLITION_GID:-1000}"
     environment:
       DEMOLITION_API_HOST: 0.0.0.0
+      DEMOLITION_ALLOW_LAN: ${DEMOLITION_ALLOW_LAN:-false}
       DEMOLITION_DATABASE_PATH: /app/database/demolition.sqlite
       DEMOLITION_PROXY_TOKEN: ${DEMOLITION_PROXY_TOKEN:?Set DEMOLITION_PROXY_TOKEN in .env}
       TZ: ${TZ:-UTC}
     volumes:
       - ${DEMOLITION_DATA_DIR:-/srv/demolition/data}:/app/data
       - ${DEMOLITION_DATABASE_DIR:?Set DEMOLITION_DATABASE_DIR in .env}:/app/database
-    expose:
-      - "3000"
-      - "3001"
     ports:
-      - "127.0.0.1:${DEMOLITION_UI_PORT:?Set DEMOLITION_UI_PORT in .env}:3000/tcp"
-      - "127.0.0.1:${DEMOLITION_API_PORT:?Set DEMOLITION_API_PORT in .env}:3001/tcp"
-      - "${DEMOLITION_WIREGUARD_IP:?Set DEMOLITION_WIREGUARD_IP in .env}:${DEMOLITION_API_PORT:?Set DEMOLITION_API_PORT in .env}:3001/tcp"
+      - "${DEMOLITION_BIND_ADDRESS:-127.0.0.1}:${DEMOLITION_UI_PORT:?Set DEMOLITION_UI_PORT in .env}:3000/tcp"
+      - "${DEMOLITION_BIND_ADDRESS:-127.0.0.1}:${DEMOLITION_API_PORT:?Set DEMOLITION_API_PORT in .env}:3001/tcp"
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 5
       start_period: 20s
-    networks:
-      - internal
-      - proxy
-
-networks:
-  internal:
-    driver: bridge
-  proxy:
-    external: true
-    name: ${DEMOLITION_PROXY_NETWORK:?Set DEMOLITION_PROXY_NETWORK in .env}

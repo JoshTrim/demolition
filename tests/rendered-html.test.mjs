@@ -161,22 +161,21 @@ test("restores a copied SQLite library and managed audio directory", async () =>
   await run(process.execPath, ["--input-type=module", "-e", verifyScript], { cwd: restoredDirectory });
 });
 
-test("ships reverse-proxy upstreams and a WireGuard-bound peer API", async () => {
+test("ships a standalone image-based Compose deployment", async () => {
   const [compose, server, page, dockerfile] = await Promise.all([
-    readFile(new URL("../compose.yaml", import.meta.url), "utf8"),
+    readFile(new URL("../docker-compose.yml", import.meta.url), "utf8"),
     readFile(new URL("../server/index.mjs", import.meta.url), "utf8"),
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../Dockerfile", import.meta.url), "utf8"),
   ]);
-  assert.match(compose, /DEMOLITION_WIREGUARD_IP/);
+  assert.match(compose, /image: \$\{DEMOLITION_IMAGE:-ghcr\.io\/joshtrim\/demolition:0\.1\.1\}/);
   assert.match(compose, /DEMOLITION_DATABASE_DIR/);
   assert.match(compose, /DEMOLITION_DATABASE_PATH: \/app\/database\/demolition\.sqlite/);
   assert.match(compose, /DEMOLITION_PROXY_TOKEN/);
-  assert.match(compose, /DEMOLITION_PROXY_NETWORK/);
-  assert.match(compose, /external: true/);
-  assert.match(compose, /127\.0\.0\.1:\$\{DEMOLITION_UI_PORT/);
-  assert.match(compose, /127\.0\.0\.1:\$\{DEMOLITION_API_PORT/);
-  assert.match(compose, /DEMOLITION_WIREGUARD_IP[\s\S]*DEMOLITION_API_PORT/);
+  assert.match(compose, /DEMOLITION_BIND_ADDRESS:-127\.0\.0\.1/);
+  assert.doesNotMatch(compose, /^\s+build:/m);
+  assert.doesNotMatch(compose, /^networks:/m);
+  assert.doesNotMatch(compose, /DEMOLITION_(?:WIREGUARD_IP|PROXY_NETWORK)/);
   assert.doesNotMatch(compose, /caddy:/);
   assert.match(server, /isTrustedProxyRequest/);
   assert.match(page, /localDevelopment[\s\S]*: path/);
