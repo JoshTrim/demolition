@@ -30,7 +30,7 @@ docker compose version
 ```bash
 sudo mkdir -p /opt/demolition /srv/demolition/data /var/lib/demolition/database /srv/demolition/backups
 sudo chown -R "$USER":"$USER" /opt/demolition /srv/demolition /var/lib/demolition
-gh repo clone JoshTrim/demolition /opt/demolition
+gh repo clone YOUR_GITHUB_OWNER/demolition /opt/demolition
 cd /opt/demolition
 cp .env.example .env
 ```
@@ -53,7 +53,7 @@ DEMOLITION_DATABASE_DIR=/var/lib/demolition/database
 DEMOLITION_PROXY_TOKEN=PASTE_THE_GENERATED_TOKEN
 DEMOLITION_UID=1000
 DEMOLITION_GID=1000
-TZ=Australia/Brisbane
+TZ=UTC
 ```
 
 Use the numeric owner of the data and database directories for `DEMOLITION_UID` and `DEMOLITION_GID`:
@@ -68,7 +68,7 @@ The database directory must be on a local Linux filesystem, not NFS, SMB, or CIF
 
 ## 3. Transfer the existing library
 
-The current library is approximately 7.4 GB. Transfer the complete legacy `data/` directory first so the database, audio, media, identity, signing key, and peer state arrive together.
+Transfer the complete legacy `data/` directory first so the database, audio, media, identity, signing key, and peer state arrive together.
 
 On the Mac, stop the running Demolition process. Then, from the repository:
 
@@ -128,7 +128,7 @@ Expected bindings are:
 Set `DEMOLITION_PROXY_NETWORK` to an existing external Docker network shared by the reverse proxy. For a Caddy container on the `caddy` network, use this Caddyfile block:
 
 ```caddyfile
-demolition.cirrus.ink {
+demolition.example.com {
 	@api path /api /api/*
 	reverse_proxy @api demolition:3001 {
 		header_up X-Demolition-Proxy-Token {$DEMOLITION_PROXY_TOKEN}

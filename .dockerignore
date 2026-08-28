@@ -1,4 +1,6 @@
 .git
+.DS_Store
+.openai
 .next
 .wrangler
 data

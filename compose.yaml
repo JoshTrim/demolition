@@ -11,7 +11,7 @@ services:
       DEMOLITION_API_HOST: 0.0.0.0
       DEMOLITION_DATABASE_PATH: /app/database/demolition.sqlite
       DEMOLITION_PROXY_TOKEN: ${DEMOLITION_PROXY_TOKEN:?Set DEMOLITION_PROXY_TOKEN in .env}
-      TZ: ${TZ:-Australia/Brisbane}
+      TZ: ${TZ:-UTC}
     volumes:
       - ${DEMOLITION_DATA_DIR:-/srv/demolition/data}:/app/data
       - ${DEMOLITION_DATABASE_DIR:?Set DEMOLITION_DATABASE_DIR in .env}:/app/database

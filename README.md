@@ -95,7 +95,7 @@ The SQLite database must live on a local Linux filesystem. Audio and moodboard m
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/JoshTrim/demolition.git
+git clone YOUR_REPOSITORY_CLONE_URL demolition
 cd demolition
 ```
 
@@ -132,7 +132,7 @@ DEMOLITION_DATABASE_DIR=/var/lib/demolition/database
 DEMOLITION_PROXY_TOKEN=PASTE_THE_GENERATED_TOKEN
 DEMOLITION_UID=1000
 DEMOLITION_GID=1000
-TZ=Australia/Brisbane
+TZ=UTC
 ```
 
 - `DEMOLITION_WIREGUARD_IP` must be an address already assigned to this server.
