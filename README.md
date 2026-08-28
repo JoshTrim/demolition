@@ -78,14 +78,125 @@ npm run lint
 npm test
 ```
 
-## Debian home server
+## Self-host with Docker
 
-Demolition includes a Docker Compose deployment for a Debian server reached through WireGuard. It exposes loopback-only UI and API upstreams for your existing reverse proxy, while direct peer traffic remains restricted to authenticated `/api/peer/*` routes on the WireGuard address.
+The included Compose deployment builds Demolition locally and runs the interface and SQLite API in one container. It is intended to sit behind an existing reverse proxy and WireGuard network. Nothing in this setup requires a managed hosting service or router port forwarding.
 
-After copying `.env.example` to `.env`, start or update it with the standard Compose command:
+### Requirements
+
+- A Linux server with Docker Engine and the Docker Compose plugin.
+- Git, OpenSSL, cURL, and rsync.
+- An existing WireGuard interface and a stable address assigned to the server.
+- A reverse proxy, either in Docker or running directly on the host.
+- Git access to this repository.
+
+The SQLite database must live on a local Linux filesystem. Audio and moodboard media may live on larger attached or network storage.
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/JoshTrim/demolition.git
+cd demolition
+```
+
+If the repository is private, authenticate with GitHub first or use its SSH clone URL.
+
+### 2. Prepare storage and the proxy network
+
+The defaults below keep SQLite on local storage and managed media under `/srv`:
+
+```bash
+sudo mkdir -p /var/lib/demolition/database /srv/demolition/data
+sudo chown -R "$(id -u):$(id -g)" /var/lib/demolition /srv/demolition
+docker network create demolition-proxy
+```
+
+If your reverse proxy already uses an external Docker network, do not create another one. Use the existing network name for `DEMOLITION_PROXY_NETWORK` instead, and attach the Demolition service and proxy to that same network.
+
+### 3. Configure Demolition
+
+```bash
+cp .env.example .env
+openssl rand -hex 32
+```
+
+Copy the generated token into `.env`, then set each value for your server:
+
+```dotenv
+DEMOLITION_WIREGUARD_IP=10.8.0.2
+DEMOLITION_UI_PORT=5030
+DEMOLITION_API_PORT=5031
+DEMOLITION_PROXY_NETWORK=demolition-proxy
+DEMOLITION_DATA_DIR=/srv/demolition/data
+DEMOLITION_DATABASE_DIR=/var/lib/demolition/database
+DEMOLITION_PROXY_TOKEN=PASTE_THE_GENERATED_TOKEN
+DEMOLITION_UID=1000
+DEMOLITION_GID=1000
+TZ=Australia/Brisbane
+```
+
+- `DEMOLITION_WIREGUARD_IP` must be an address already assigned to this server.
+- `DEMOLITION_UI_PORT` and `DEMOLITION_API_PORT` are loopback ports used by a host-native reverse proxy and local diagnostics.
+- `DEMOLITION_PROXY_NETWORK` must match the external Docker network used by a containerized reverse proxy.
+- `DEMOLITION_DATA_DIR` stores managed audio and moodboard files.
+- `DEMOLITION_DATABASE_DIR` stores SQLite, the local identity, and signing keys. Do not place it on NFS, SMB, or CIFS.
+- `DEMOLITION_UID` and `DEMOLITION_GID` must match the numeric owner of both storage directories. Check them with `stat -c '%u %g' PATH`.
+- `DEMOLITION_PROXY_TOKEN` authorizes owner API requests arriving through the reverse proxy. Keep it out of Git and browser-visible configuration.
+
+### 4. Start the container
 
 ```bash
 docker compose up -d --build
+docker compose ps
+docker compose logs --tail=100 demolition
 ```
 
-See [docs/debian-server.md](docs/debian-server.md) for migration, reverse-proxy, firewall, backup, restore, and update instructions. Nothing in this deployment requires public hosting or router port forwarding.
+Compose reads `.env` automatically. The first command builds the image from the checked-out source and starts it with `restart: unless-stopped`.
+
+### 5. Configure the reverse proxy
+
+Browser traffic must send `/api/*` to the API port and all other paths to the interface. A containerized proxy should use the internal service ports, not the host ports from `.env`.
+
+For Caddy running on the same external Docker network:
+
+```caddyfile
+demolition.example.com {
+	@api path /api /api/*
+	reverse_proxy @api demolition:3001 {
+		header_up X-Demolition-Proxy-Token {$DEMOLITION_PROXY_TOKEN}
+	}
+
+	reverse_proxy demolition:3000
+}
+```
+
+Make the same `DEMOLITION_PROXY_TOKEN` value available in Caddy's environment, attach Caddy to `DEMOLITION_PROXY_NETWORK`, then reload Caddy. If the proxy runs directly on the host, route to `127.0.0.1:DEMOLITION_API_PORT` and `127.0.0.1:DEMOLITION_UI_PORT` instead.
+
+Do not expose either owner port directly to the internet. The API is separately bound to the WireGuard address for authenticated peer syncing.
+
+### 6. Verify the installation
+
+```bash
+set -a
+. ./.env
+set +a
+curl -fsS "http://127.0.0.1:${DEMOLITION_API_PORT}/api/health"
+```
+
+The health request should return JSON containing `"ok":true`. Then open the configured reverse-proxy hostname and confirm that the library loads, imports persist after a container restart, and Listen mode can play a managed audio copy.
+
+### Updates
+
+Back up the instance before updating, then rebuild from the latest source:
+
+```bash
+./scripts/server-backup.sh /srv/demolition/backups
+git pull --ff-only
+docker compose up -d --build
+```
+
+### Backups and migration
+
+Back up both `DEMOLITION_DATABASE_DIR` and `DEMOLITION_DATA_DIR`. The database contains catalogue metadata, ratings, account identity, and signing keys; the data directory contains Demolition's managed media copies. A backup stored only on the same disk does not protect against disk failure.
+
+See [docs/debian-server.md](docs/debian-server.md) for detailed Debian preparation, migrating an existing library, Caddy and firewall configuration, WireGuard peer sync, consistent backup and restore procedures, and migration verification.
