@@ -172,7 +172,7 @@ test("ships a standalone image-based Compose deployment", async () => {
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../Dockerfile", import.meta.url), "utf8"),
   ]);
-  assert.match(compose, /image: \$\{DEMOLITION_IMAGE:-ghcr\.io\/joshtrim\/demolition:0\.1\.4\}/);
+  assert.match(compose, /image: \$\{DEMOLITION_IMAGE:-ghcr\.io\/joshtrim\/demolition:0\.1\.5\}/);
   assert.match(compose, /DEMOLITION_DATABASE_DIR/);
   assert.match(compose, /DEMOLITION_DATABASE_PATH: \/app\/database\/demolition\.sqlite/);
   assert.match(compose, /DEMOLITION_PROXY_TOKEN/);
