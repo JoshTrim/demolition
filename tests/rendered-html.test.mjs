@@ -98,7 +98,7 @@ test("pairs local identities and exchanges signed ratings", async () => {
       demos: [{ id: 1, uuid: "shared-demo", ownerId: firstAccount.id, title: "Shared", bpm: 110, key: "D", duration: "01:00", status: "unheard", tags: [], note: "", nextAction: "", project: "Album", updatedAt: 1 }],
       listens: [{ id: 2, eventUuid: "alex-vote", demoId: 1, demoUuid: "shared-demo", authorId: firstAccount.id, authorName: "Alex", verdict: "up", note: "owner vote", listenedAt: 2 }],
       timedNotes: [{ id: 4, noteUuid: "alex-note", demoId: 1, demoUuid: "shared-demo", authorId: firstAccount.id, authorName: "Alex", startSeconds: 4, endSeconds: 9, note: "Intro texture", createdAt: 4 }],
-      shares: [], projectShares: [{ project: "Album", friendId: secondAccount.id, shareAudio: false }]
+      shares: [{ demoUuid: "shared-demo", friendId: secondAccount.id, shareAudio: false }], projectShares: []
     });
     second.mergeSyncPackage(firstAccount.id, first.buildSyncPackage(secondAccount.id));
     let secondState = second.readWorkspace();
@@ -120,11 +120,15 @@ test("pairs local identities and exchanges signed ratings", async () => {
     first.mergeSyncPackage(secondAccount.id, second.buildSyncPackage(firstAccount.id));
     const firstState = first.readWorkspace();
     if (!firstState.listens.some((listen) => listen.authorName === "Blair" && listen.verdict === "down" && listen.signature) || !firstState.timedNotes.some((note) => note.authorName === "Blair" && note.note === "Try a shorter fill" && note.signature)) process.exit(1);
-    first.writeWorkspace({ ...firstState, projectShares: [] });
+    first.writeWorkspace({ ...firstState, shares: [] });
     const secondBeforeRevokedVote = second.readWorkspace();
     second.writeWorkspace({ ...secondBeforeRevokedVote, listens: [...secondBeforeRevokedVote.listens, { id: 6, eventUuid: "revoked-vote", demoId: remoteDemo.id, demoUuid: remoteDemo.uuid, authorId: secondAccount.id, authorName: "Blair", verdict: "up", note: "after revoke", listenedAt: 6 }] });
     first.mergeSyncPackage(secondAccount.id, second.buildSyncPackage(firstAccount.id));
     if (first.readWorkspace().listens.some((listen) => listen.eventUuid === "revoked-vote")) process.exit(1);
+    const revocationPackage = first.buildSyncPackage(secondAccount.id);
+    if (!revocationPackage.revokedDemoUuids.includes("shared-demo")) process.exit(1);
+    const secondAfterRevocation = second.mergeSyncPackage(firstAccount.id, revocationPackage);
+    if (secondAfterRevocation.revokedFiles.length !== 0 || second.readWorkspace().demos.some((demo) => demo.uuid === "shared-demo")) process.exit(1);
   `;
   await run(process.execPath, ["--input-type=module", "-e", script], { cwd: temporaryDirectory });
 });
@@ -173,12 +177,14 @@ test("ships a standalone image-based Compose deployment", async () => {
   assert.match(compose, /DEMOLITION_DATABASE_PATH: \/app\/database\/demolition\.sqlite/);
   assert.match(compose, /DEMOLITION_PROXY_TOKEN/);
   assert.match(compose, /DEMOLITION_BIND_ADDRESS:-127\.0\.0\.1/);
+  assert.match(compose, /NEXT_PUBLIC_DEMOLITION_API_PORT/);
+  assert.match(compose, /NEXT_PUBLIC_DEMOLITION_UI_PORT/);
   assert.doesNotMatch(compose, /^\s+build:/m);
   assert.doesNotMatch(compose, /^networks:/m);
   assert.doesNotMatch(compose, /DEMOLITION_(?:WIREGUARD_IP|PROXY_NETWORK)/);
   assert.doesNotMatch(compose, /caddy:/);
   assert.match(server, /isTrustedProxyRequest/);
-  assert.match(page, /localDevelopment[\s\S]*: path/);
+  assert.match(page, /uiPort[\s\S]*localDevelopment[\s\S]*: path/);
   assert.match(dockerfile, /node:22-bookworm-slim/);
   assert.match(dockerfile, /RUN rm -rf \/app\/data \/app\/database/);
 });

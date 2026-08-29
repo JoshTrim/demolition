@@ -107,7 +107,8 @@ function apiUrl(path: string) {
   const localHost = hostname === "localhost" || hostname === "127.0.0.1";
   const lanAddress = /^(?:\d{1,3}\.){3}\d{1,3}$/.test(hostname);
   const localHostname = hostname.endsWith(".local");
-  const localDevelopment = window.location.port === "3000" && (localHost || lanAddress || localHostname);
+  const uiPort = document.body?.dataset.demolitionUiPort || "3000";
+  const localDevelopment = window.location.port === uiPort && (localHost || lanAddress || localHostname);
   const apiHost = hostname.includes(":") && !hostname.startsWith("[") ? `[${hostname}]` : hostname;
   const apiPort = document.body?.dataset.demolitionApiPort || "3001";
   return localDevelopment ? `http://${apiHost}:${apiPort}${path}` : path;
@@ -650,6 +651,10 @@ export default function Home() {
   const [friends, setFriends] = useState<Friend[]>([]);
   const [shares, setShares] = useState<DemoShare[]>([]);
   const [projectShares, setProjectShares] = useState<ProjectShare[]>([]);
+  const [selectedDemoIds, setSelectedDemoIds] = useState<Set<number>>(new Set());
+  const [showBulkShare, setShowBulkShare] = useState(false);
+  const [bulkShareFriendIds, setBulkShareFriendIds] = useState<string[]>([]);
+  const [bulkShareProgress, setBulkShareProgress] = useState("");
   const [mediaUrls, setMediaUrls] = useState<Record<number, string>>({});
   const [orders, setOrders] = useState<Record<string, number[]>>({});
   const [view, setView] = useState<View>("library");
@@ -1109,6 +1114,7 @@ export default function Home() {
   }, [listens]);
   const statsFor = (demoId: number) => listenStats.get(demoId) ?? { up: 0, down: 0, score: 0, count: 0 };
   const selected = demos.find((demo) => demo.id === selectedId) ?? demos[0];
+  const selectedDemos = demos.filter((demo) => selectedDemoIds.has(demo.id) && demo.ownerId === account?.id);
   const feedbackItems = useMemo<FeedbackItem[]>(() => {
     if (!account) return [];
     const titles = new Map(demos.map((demo) => [demo.id, demo.title]));
@@ -2529,6 +2535,47 @@ export default function Home() {
       : [...current, { project: projectName, friendId, shareAudio: true }]);
   }
 
+  function toggleDemoSelection(id: number) {
+    setSelectedDemoIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function selectVisibleDemos() {
+    const ids = visibleDemos.filter((demo) => demo.ownerId === account?.id).map((demo) => demo.id);
+    setSelectedDemoIds((current) => {
+      const next = new Set(current);
+      const allSelected = ids.length > 0 && ids.every((id) => next.has(id));
+      ids.forEach((id) => allSelected ? next.delete(id) : next.add(id));
+      return next;
+    });
+  }
+
+  function openBulkShare() {
+    if (!selectedDemos.length || !friends.length) return;
+    setBulkShareFriendIds(friends.filter((friend) => selectedDemos.every((demo) => shares.some((share) => share.demoUuid === demo.uuid && share.friendId === friend.id))).map((friend) => friend.id));
+    setBulkShareProgress("");
+    setShowBulkShare(true);
+  }
+
+  function applyBulkShare(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedDemos.length) return;
+    const selectedUuids = new Set(selectedDemos.map((demo) => demo.uuid));
+    const selectedFriends = new Set(bulkShareFriendIds);
+    setShares((current) => {
+      const next = current.filter((share) => !selectedUuids.has(share.demoUuid) || !friends.some((friend) => friend.id === share.friendId));
+      selectedDemos.forEach((demo) => friends.forEach((friend) => {
+        if (selectedFriends.has(friend.id)) next.push({ demoUuid: demo.uuid, friendId: friend.id, shareAudio: true });
+      }));
+      return next;
+    });
+    setBulkShareProgress(`Sharing ${selectedDemos.length} demos with ${selectedFriends.size} ${selectedFriends.size === 1 ? "friend" : "friends"}. Sync them to send the changes.`);
+    setShowBulkShare(false);
+  }
+
   function exportBackup() {
     const payload = JSON.stringify({ version: 8, exportedAt: new Date().toISOString(), demos, projects, tags, orders, media, listens, timedNotes, shares, projectShares }, null, 2);
     const url = URL.createObjectURL(new Blob([payload], { type: "application/json" }));
@@ -2714,7 +2761,7 @@ export default function Home() {
           </section> : <>
           <div className="section-heading"><div><h2>{currentTitle}</h2><span className="muted">{view === "project" ? "Drag rows to reorder the tracklist." : view === "revisit" ? "Demos marked Unheard or Revisit, sorted oldest first." : "Filter, search, and sort your demos."}</span></div><span className="saved-note">{ready ? "✓ Changes saved locally" : "Loading your library…"}</span></div>
           <div className={`workspace-grid ${view === "project" && project !== "Unsorted" ? "project-workspace" : ""}`}>
-            <div className="demo-panel" onDragOver={(event) => { if (view === "project") event.preventDefault(); }} onDrop={() => { if (view === "project") dropOnTracklist(); }}><div className="filter-row"><div className="filters">{["All", "Favourites", "Unheard", "Revisit", "Shaping", "Finished"].map((item) => <button key={item} onClick={() => { setStatsFilters([]); setFilter(item); }} className={filter === item ? "filter-active" : ""}>{item}</button>)}</div><div className="filter-tools"><select className="tag-select" value={tagFilter} onChange={(event) => { setStatsFilters([]); setTagFilter(event.target.value); }} aria-label="Filter by tag"><option>All tags</option>{tags.map((tag) => <option key={tag.name}>{tag.name}</option>)}</select>{view === "project" ? <span className="sort-button">↕ Drag to reorder</span> : <select className="sort-select" value={sortBy} onChange={(event) => setSortBy(event.target.value as typeof sortBy)} aria-label="Sort demos"><option value="score">Score · highest</option><option value="updated">Recently updated</option><option value="created-new">Creation date · newest</option><option value="created-old">Creation date · oldest</option><option value="title">Title · A–Z</option></select>}</div></div><div className="demo-table"><div className="table-head"><span>{view === "project" ? "TRACK / DEMO" : "DEMO"}</span><span>DETAILS</span><span>STATUS</span><span>UPDATED</span><span /></div>{visibleDemos.map((demo, index) => <button key={demo.id} draggable={view === "project"} onDragStart={() => setDraggedId(demo.id)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.stopPropagation(); dropOnTracklist(demo.id); }} onClick={() => setSelectedId(demo.id)} className={`demo-row ${selectedId === demo.id ? "row-selected" : ""}`}><span className="demo-name">{view === "project" && <b className="track-number">{String(index + 1).padStart(2, "0")}</b>}<span className={`cover cover-${demo.id % 4}`}><i /></span><span><strong>{demo.title}{demo.favorite && <i className="favorite-mark" aria-label="Favourite">★</i>}</strong><small>{demo.creationDate && <b className="date-tag">{formatCreationDate(demo.creationDate)}</b>}{demo.tags.join("  ·  ")}{demo.audioName ? "  ·  audio linked" : ""}</small></span></span><span className="details">{demo.bpm ? `${demo.bpm} BPM` : "BPM —"} <i>·</i> {demo.key} <i>·</i> {demo.duration} <i>·</i> Score {statsFor(demo.id).score > 0 ? `+${statsFor(demo.id).score}` : statsFor(demo.id).score}</span><span><b className={`status ${demo.status}`}>{statusLabels[demo.status]}</b></span><span className="updated">{relativeDate(demo.updatedAt)}</span><span className="row-arrow">→</span></button>)}</div>{visibleDemos.length === 0 && (view === "project" ? <div className="empty-state tracklist-empty">Drag candidates here to begin the tracklist.</div> : demos.length === 0 ? <div className="empty-state library-empty"><span>✳</span><strong>Your library is empty</strong><p>Choose a folder of demo bounces to start building your archive.</p><button onClick={openBulkImport}>＋ Import your demos</button></div> : <div className="empty-state">No demos match this view.</div>)}</div>
+          <div className="demo-panel" onDragOver={(event) => { if (view === "project") event.preventDefault(); }} onDrop={() => { if (view === "project") dropOnTracklist(); }}><div className="filter-row"><div className="filters">{["All", "Favourites", "Unheard", "Revisit", "Shaping", "Finished"].map((item) => <button key={item} onClick={() => { setStatsFilters([]); setFilter(item); }} className={filter === item ? "filter-active" : ""}>{item}</button>)}</div><div className="filter-tools"><select className="tag-select" value={tagFilter} onChange={(event) => { setStatsFilters([]); setTagFilter(event.target.value); }} aria-label="Filter by tag"><option>All tags</option>{tags.map((tag) => <option key={tag.name}>{tag.name}</option>)}</select>{view === "project" ? <span className="sort-button">↕ Drag to reorder</span> : <select className="sort-select" value={sortBy} onChange={(event) => setSortBy(event.target.value as typeof sortBy)} aria-label="Sort demos"><option value="score">Score · highest</option><option value="updated">Recently updated</option><option value="created-new">Creation date · newest</option><option value="created-old">Creation date · oldest</option><option value="title">Title · A–Z</option></select>}</div></div>{view !== "project" && <div className="bulk-share-toolbar"><label><input type="checkbox" checked={visibleDemos.filter((demo) => demo.ownerId === account?.id).length > 0 && visibleDemos.filter((demo) => demo.ownerId === account?.id).every((demo) => selectedDemoIds.has(demo.id))} onChange={selectVisibleDemos} aria-label="Select all visible demos" /> Select visible</label><span>{selectedDemos.length ? `${selectedDemos.length} selected` : "Select demos to share"}</span><button type="button" className="secondary-button" disabled={!selectedDemos.length || !friends.length} onClick={openBulkShare}>Share selected</button></div>}<div className="demo-table"><div className="table-head"><span>{view === "project" ? "TRACK / DEMO" : "DEMO"}</span><span>DETAILS</span><span>STATUS</span><span>UPDATED</span><span /></div>{visibleDemos.map((demo, index) => <div className="demo-row-wrap" key={demo.id}>{view !== "project" && demo.ownerId === account?.id && <label className="demo-select"><input type="checkbox" checked={selectedDemoIds.has(demo.id)} onChange={() => toggleDemoSelection(demo.id)} aria-label={`Select ${demo.title}`} /></label>}<button draggable={view === "project"} onDragStart={() => setDraggedId(demo.id)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.stopPropagation(); dropOnTracklist(demo.id); }} onClick={() => setSelectedId(demo.id)} className={`demo-row ${selectedId === demo.id ? "row-selected" : ""}`}><span className="demo-name">{view === "project" && <b className="track-number">{String(index + 1).padStart(2, "0")}</b>}<span className={`cover cover-${demo.id % 4}`}><i /></span><span><strong>{demo.title}{demo.favorite && <i className="favorite-mark" aria-label="Favourite">★</i>}</strong><small>{demo.creationDate && <b className="date-tag">{formatCreationDate(demo.creationDate)}</b>}{demo.tags.join("  ·  ")}{demo.audioName ? "  ·  audio linked" : ""}</small></span></span><span className="details">{demo.bpm ? `${demo.bpm} BPM` : "BPM —"} <i>·</i> {demo.key} <i>·</i> {demo.duration} <i>·</i> Score {statsFor(demo.id).score > 0 ? `+${statsFor(demo.id).score}` : statsFor(demo.id).score}</span><span><b className={`status ${demo.status}`}>{statusLabels[demo.status]}</b></span><span className="updated">{relativeDate(demo.updatedAt)}</span><span className="row-arrow">→</span></button></div>)}</div>{visibleDemos.length === 0 && (view === "project" ? <div className="empty-state tracklist-empty">Drag candidates here to begin the tracklist.</div> : demos.length === 0 ? <div className="empty-state library-empty"><span>✳</span><strong>Your library is empty</strong><p>Choose a folder of demo bounces to start building your archive.</p><button onClick={openBulkImport}>＋ Import your demos</button></div> : <div className="empty-state">No demos match this view.</div>)}</div>
 
             {view === "project" && project !== "Unsorted" && <aside className="candidate-panel" onDragOver={(event) => event.preventDefault()} onDrop={dropInCandidatePool}><div className="candidate-head"><div><span className="eyebrow">CANDIDATE POOL</span><h3>{projectCandidates.length} candidate {projectCandidates.length === 1 ? "track" : "tracks"}</h3></div><span>Drag into tracklist →</span></div><div className="candidate-list">{projectCandidates.map((demo) => <div key={demo.id} className="candidate-row" draggable onDragStart={() => setDraggedId(demo.id)}><button onClick={() => setSelectedId(demo.id)}><span className={`cover cover-${demo.id % 4}`}><i /></span><span><strong>{demo.title}</strong><small>{demo.bpm ? `${demo.bpm} BPM` : "BPM unknown"} · {statusLabels[demo.status]}</small></span></button><button className="promote-button" onClick={() => setOrders((current) => ({ ...current, [project]: [...(current[project] ?? []).filter((id) => id !== demo.id), demo.id] }))} aria-label={`Add ${demo.title} to tracklist`}>＋</button></div>)}{projectCandidates.length === 0 && <div className="candidate-empty"><span>✓</span><strong>No candidates</strong><small>Import demos here or drag a track out of the tracklist.</small></div>}</div><div className="candidate-drop">← Drop here to return a track to the pool</div></aside>}
 
@@ -2768,6 +2815,8 @@ export default function Home() {
       </div>}
 
       {showBulk && <div className="modal-backdrop"><form className="modal bulk-modal" onSubmit={bulkImport}><button type="button" className="modal-close" disabled={/^(Checking|Analyzing)/.test(bulkProgress)} onClick={() => setShowBulk(false)}>×</button><div className="eyebrow">BULK IMPORT</div><h2>Import audio files</h2><p>Select a folder or choose several audio files. Every imported demo can receive the same batch tags.</p><div className="source-safety"><span>✓</span><div><strong>Your source files are read-only</strong><small>Demolition creates app-managed local copies. It cannot rename, overwrite, or delete anything in the selected folder.</small></div></div><div className="bulk-choices"><label className="file-drop bulk-choice"><span className="bulk-icon">▤</span><strong>Choose a folder</strong><small>Audio from all subfolders · other files ignored</small><input name="folder" type="file" accept="audio/*,.wav,.aif,.aiff,.mp3,.m4a,.flac,.ogg,.opus,.aac" multiple webkitdirectory="" /></label><label className="file-drop bulk-choice"><span className="bulk-icon">♪</span><strong>Choose audio files</strong><small>Select multiple files</small><input name="files" type="file" accept="audio/*,.wav,.aif,.aiff,.mp3,.m4a,.flac,.ogg,.opus,.aac" multiple /></label></div><label>Destination<select name="project" defaultValue={project !== "All demos" && project !== "Unsorted" ? project : projects[0]?.name ?? "Unsorted"}>{projectNames.map((name) => <option key={name}>{name}</option>)}</select></label><label>Batch tags<input name="tags" list="known-tags" placeholder="e.g. April exports, laptop sessions" /><span className="field-hint">Comma separated · applied to every file in this import</span></label>{bulkProgress && <div className={`bulk-progress ${bulkProgress.startsWith("No ") || bulkProgress.startsWith("Not ") || bulkProgress.startsWith("Nothing ") || bulkProgress.startsWith("Import stopped") ? "bulk-error" : ""}`}><span /><p>{bulkProgress}</p></div>}<button className="primary-button modal-submit" disabled={/^(Checking|Analyzing)/.test(bulkProgress)} type="submit">{/^(Checking|Analyzing)/.test(bulkProgress) ? "Checking and analyzing…" : "Import safe copies"} <span>→</span></button><small className="bulk-privacy">Only Demolition&apos;s managed copies can be removed from this app.</small></form></div>}
+
+      {showBulkShare && <div className="modal-backdrop"><form className="modal bulk-share-modal" onSubmit={applyBulkShare}><button type="button" className="modal-close" onClick={() => setShowBulkShare(false)}>×</button><div className="eyebrow">SHARE DEMOS</div><h2>{selectedDemos.length} selected</h2><p>Choose which friends should receive these demos. Clearing a friend revokes their access; the change takes effect when they sync.</p><div className="bulk-share-actions"><button type="button" className="text-button" onClick={() => setBulkShareFriendIds(friends.map((friend) => friend.id))}>Select all</button><button type="button" className="text-button" onClick={() => setBulkShareFriendIds([])}>Clear all</button></div><div className="bulk-share-friends">{friends.map((friend) => { const sharedCount = selectedDemos.filter((demo) => shares.some((share) => share.demoUuid === demo.uuid && share.friendId === friend.id)).length; return <label key={friend.id} aria-label={`Share selected demos with ${friend.displayName}`}><input type="checkbox" checked={bulkShareFriendIds.includes(friend.id)} onChange={() => setBulkShareFriendIds((current) => current.includes(friend.id) ? current.filter((id) => id !== friend.id) : [...current, friend.id])} /><span><strong>{friend.displayName}</strong><small>{sharedCount === selectedDemos.length ? "Shared with all selected" : sharedCount ? `${sharedCount} of ${selectedDemos.length} already shared` : "Not shared yet"}</small></span></label>; })}{friends.length === 0 && <small>No connected friends.</small>}</div>{bulkShareProgress && <div className="mesh-progress">{bulkShareProgress}</div>}<button className="primary-button modal-submit" type="submit">Apply sharing <span>→</span></button></form></div>}
 
       {showAdd && <div className="modal-backdrop"><form className="modal" onSubmit={addDemo}><button type="button" className="modal-close" onClick={() => setShowAdd(false)}>×</button><div className="eyebrow">IMPORT DEMO</div><h2>Import one demo</h2><p>Choose an audio file. Demolition creates a managed local copy, detects its BPM, and leaves the original untouched.</p><label className="file-drop">Audio file<input name="audio" type="file" accept="audio/*,.wav,.aif,.aiff,.mp3,.m4a,.flac" /><span>Read-only source · managed local copy</span></label><label>Demo title<input name="title" placeholder="Uses the filename if left blank" /></label><div className="modal-fields"><label>BPM<input name="bpm" type="number" placeholder="Auto detect" /></label><label>Key<input name="key" placeholder="e.g. C maj · optional" /></label></div><label>Project<select name="project" defaultValue={project !== "All demos" ? project : "Unsorted"}>{projectNames.map((name) => <option key={name}>{name}</option>)}</select></label><label>Tags<input name="tags" list="known-tags" placeholder="e.g. April exports, laptop sessions" /><span className="field-hint">Comma separated</span></label><button className="primary-button modal-submit" type="submit">Import safe copy <span>→</span></button></form></div>}
 

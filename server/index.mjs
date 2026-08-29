@@ -337,9 +337,13 @@ async function syncFriend(friendId) {
       headers: { authorization: `Bearer ${friend.outbound_token}`, "content-type": "application/json" },
       body: JSON.stringify(buildSyncPackage(friendId)),
     });
-    const audioUuids = mergeSyncPackage(friendId, incoming);
+    const mergeResult = mergeSyncPackage(friendId, incoming);
+    for (const file of mergeResult.revokedFiles) {
+      await unlink(path.join(audioDirectory, file.storageName)).catch(() => undefined);
+      await unlink(path.join(audioDirectory, file.derivativeName)).catch(() => undefined);
+    }
     let audioCopied = 0;
-    for (const uuid of audioUuids) if (await downloadPeerAudio(friend, uuid)) audioCopied++;
+    for (const uuid of mergeResult.audioUuids) if (await downloadPeerAudio(friend, uuid)) audioCopied++;
     return { ok: true, audioCopied, workspace: readWorkspace() };
   } catch (error) {
     markFriendSyncError(friendId);
@@ -386,7 +390,11 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname === "/api/peer/sync") {
       const peer = requirePeer(req);
       const incoming = await readJson(req);
-      mergeSyncPackage(peer.id, incoming);
+      const mergeResult = mergeSyncPackage(peer.id, incoming);
+      for (const file of mergeResult.revokedFiles) {
+        await unlink(path.join(audioDirectory, file.storageName)).catch(() => undefined);
+        await unlink(path.join(audioDirectory, file.derivativeName)).catch(() => undefined);
+      }
       return sendJson(req, res, 200, buildSyncPackage(peer.id));
     }
     const peerAudioRoute = url.pathname.match(/^\/api\/peer\/audio\/([^/]+)$/);

@@ -36,6 +36,7 @@ export default function RootLayout({
     <html lang="en">
       <body
         data-demolition-api-port={process.env.NEXT_PUBLIC_DEMOLITION_API_PORT || process.env.DEMOLITION_API_PORT || "3001"}
+        data-demolition-ui-port={process.env.NEXT_PUBLIC_DEMOLITION_UI_PORT || "3000"}
         className={`${geistSans.variable} ${geistMono.variable} ${pixelDisplay.variable} antialiased`}
       >
         {children}

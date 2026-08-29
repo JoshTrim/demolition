@@ -164,6 +164,14 @@ database.exec(`
     FOREIGN KEY (friend_id) REFERENCES friends(id) ON DELETE CASCADE
   );
 
+  CREATE TABLE IF NOT EXISTS demo_share_revocations (
+    demo_uuid TEXT NOT NULL,
+    friend_id TEXT NOT NULL,
+    revoked_at INTEGER NOT NULL,
+    PRIMARY KEY (demo_uuid, friend_id),
+    FOREIGN KEY (friend_id) REFERENCES friends(id) ON DELETE CASCADE
+  );
+
   CREATE TABLE IF NOT EXISTS remote_sessions (
     token TEXT PRIMARY KEY,
     state_json TEXT NOT NULL DEFAULT '{}',
@@ -219,6 +227,7 @@ database.exec(`
   CREATE INDEX IF NOT EXISTS idx_timed_notes_demo_range ON timed_notes(demo_uuid, start_seconds, end_seconds);
   CREATE INDEX IF NOT EXISTS idx_shares_friend ON demo_shares(friend_id, demo_uuid);
   CREATE INDEX IF NOT EXISTS idx_project_shares_friend ON project_shares(friend_id, project);
+  CREATE INDEX IF NOT EXISTS idx_demo_share_revocations_friend ON demo_share_revocations(friend_id, demo_uuid);
   CREATE INDEX IF NOT EXISTS idx_remote_sessions_expiry ON remote_sessions(expires_at);
   PRAGMA optimize;
 `);
@@ -487,6 +496,7 @@ const insertTimedNote = database.prepare(`
 `);
 const insertShare = database.prepare("INSERT INTO demo_shares (demo_uuid, friend_id, share_audio) VALUES (?, ?, ?)");
 const insertProjectShare = database.prepare("INSERT INTO project_shares (project, friend_id, share_audio) VALUES (?, ?, ?)");
+const insertDemoShareRevocation = database.prepare("INSERT INTO demo_share_revocations (demo_uuid, friend_id, revoked_at) VALUES (?, ?, ?) ON CONFLICT(demo_uuid, friend_id) DO UPDATE SET revoked_at = excluded.revoked_at");
 
 function localizeListen(listen, demoById) {
   const demoUuid = listen.demoUuid || demoById.get(Number(listen.demoId))?.uuid;
@@ -535,6 +545,8 @@ export function writeWorkspace(payload) {
   const demoIds = new Set(demoById.keys());
   const demoUuids = new Set(normalizedDemos.map((demo) => demo.uuid));
   const friendIds = new Set(listFriends.all().map((friend) => friend.id));
+  const previousShares = new Set(listShares.all().map((share) => `${share.demo_uuid}\u0000${share.friend_id}`));
+  const nextShares = new Set(shares.filter((share) => demoUuids.has(share.demoUuid) && friendIds.has(share.friendId)).map((share) => `${share.demoUuid}\u0000${share.friendId}`));
   const tagMap = new Map();
   for (const tag of suppliedTags) {
     const name = String(tag?.name ?? "").trim();
@@ -548,6 +560,16 @@ export function writeWorkspace(payload) {
   }
   database.exec("BEGIN IMMEDIATE");
   try {
+    for (const key of previousShares) {
+      if (!nextShares.has(key)) {
+        const [demoUuid, friendId] = key.split("\u0000");
+        insertDemoShareRevocation.run(demoUuid, friendId, Date.now());
+      }
+    }
+    for (const key of nextShares) {
+      const [demoUuid, friendId] = key.split("\u0000");
+      database.prepare("DELETE FROM demo_share_revocations WHERE demo_uuid = ? AND friend_id = ?").run(demoUuid, friendId);
+    }
     database.exec("DELETE FROM tracklist; DELETE FROM project_media; DELETE FROM demo_shares; DELETE FROM project_shares; DELETE FROM timed_notes; DELETE FROM listens; DELETE FROM demos; DELETE FROM projects; DELETE FROM tags;");
     projects.forEach((project, position) => insertProject.run(project.name, project.color, project.mood ?? "", position));
     for (const tag of tagMap.values()) insertTag.run(tag.name, tag.createdAt);
@@ -667,7 +689,8 @@ export function buildSyncPackage(friendId) {
   const timedNotes = listTimedNotes.all().map(mapTimedNote).filter((note) =>
     sharedUuids.has(note.demoUuid) || (note.authorId === owner.id && remoteUuids.has(note.demoUuid)),
   );
-  return { account: getAccount(), demos: sharedRows.map((row) => syncDemo(row, friendId)), listens, timedNotes };
+  const revokedDemoUuids = database.prepare("SELECT demo_uuid FROM demo_share_revocations WHERE friend_id = ? ORDER BY revoked_at").all(friendId).map((row) => row.demo_uuid);
+  return { account: getAccount(), demos: sharedRows.map((row) => syncDemo(row, friendId)), listens, timedNotes, revokedDemoUuids };
 }
 
 function canFriendAccessDemo(friendId, demoUuid) {
@@ -690,8 +713,18 @@ export function mergeSyncPackage(friendId, payload) {
   const incomingDemos = Array.isArray(payload.demos) ? payload.demos : [];
   const incomingListens = Array.isArray(payload.listens) ? payload.listens : [];
   const incomingTimedNotes = Array.isArray(payload.timedNotes) ? payload.timedNotes : [];
+  const revokedDemoUuids = [...new Set(Array.isArray(payload.revokedDemoUuids) ? payload.revokedDemoUuids.filter((uuid) => typeof uuid === "string" && uuid) : [])];
+  const revokedFiles = [];
   database.exec("BEGIN IMMEDIATE");
   try {
+    for (const uuid of revokedDemoUuids) {
+      const existing = database.prepare("SELECT id, owner_id FROM demos WHERE uuid = ?").get(uuid);
+      if (!existing || existing.owner_id !== friend.id) continue;
+      const stored = database.prepare("SELECT storage_name, updated_at FROM stored_files WHERE entity_type = 'audio' AND entity_id = ?").get(existing.id);
+      if (stored) revokedFiles.push({ storageName: stored.storage_name, derivativeName: `.${existing.id}-${stored.updated_at}.playback.wav` });
+      database.prepare("DELETE FROM stored_files WHERE entity_type = 'audio' AND entity_id = ?").run(existing.id);
+      database.prepare("DELETE FROM demos WHERE id = ?").run(existing.id);
+    }
     for (const demo of incomingDemos) {
       if (!demo.uuid || demo.ownerId !== friend.id) continue;
       const existing = database.prepare("SELECT * FROM demos WHERE uuid = ?").get(demo.uuid);
@@ -749,7 +782,7 @@ export function mergeSyncPackage(friendId, payload) {
     database.exec("ROLLBACK");
     throw error;
   }
-  return incomingDemos.filter((demo) => demo.audioAvailable).map((demo) => demo.uuid);
+  return { audioUuids: incomingDemos.filter((demo) => demo.audioAvailable).map((demo) => demo.uuid), revokedFiles };
 }
 
 export function demoByUuid(uuid) {
