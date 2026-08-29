@@ -1155,3 +1155,35 @@ button,input,select,textarea,.project-tabs button b,.date-tag { border-radius:va
   .phone-score { padding:11px; grid-template-columns:74px minmax(0,1fr); gap:8px; }
   .phone-votes button { min-height:80px; }
 }
+
+/* Demo table alignment: the bulk-selection gutter is part of the table grid. */
+.demo-table-selectable > .table-head {
+  grid-template-columns:34px 2.1fr 1.3fr 1fr .8fr 18px;
+  padding-left:18px;
+}
+.demo-table-selectable > .table-head > span:first-child {
+  min-width:0;
+}
+.demo-name > span:last-child {
+  min-width:0;
+}
+.demo-name strong,
+.demo-name small {
+  max-width:100%;
+}
+
+@media (max-width:720px) {
+  .demo-table-selectable > .table-head {
+    display:none;
+  }
+  .demo-row-wrap {
+    grid-template-columns:34px minmax(0,1fr);
+  }
+  .demo-row-wrap > .demo-row {
+    padding-left:13px;
+    padding-right:13px;
+  }
+  .demo-name {
+    gap:9px;
+  }
+}
