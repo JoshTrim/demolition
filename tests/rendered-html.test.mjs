@@ -168,7 +168,7 @@ test("ships a standalone image-based Compose deployment", async () => {
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../Dockerfile", import.meta.url), "utf8"),
   ]);
-  assert.match(compose, /image: \$\{DEMOLITION_IMAGE:-ghcr\.io\/joshtrim\/demolition:0\.1\.1\}/);
+  assert.match(compose, /image: \$\{DEMOLITION_IMAGE:-ghcr\.io\/joshtrim\/demolition:0\.1\.2\}/);
   assert.match(compose, /DEMOLITION_DATABASE_DIR/);
   assert.match(compose, /DEMOLITION_DATABASE_PATH: \/app\/database\/demolition\.sqlite/);
   assert.match(compose, /DEMOLITION_PROXY_TOKEN/);
@@ -180,6 +180,7 @@ test("ships a standalone image-based Compose deployment", async () => {
   assert.match(server, /isTrustedProxyRequest/);
   assert.match(page, /localDevelopment[\s\S]*: path/);
   assert.match(dockerfile, /node:22-bookworm-slim/);
+  assert.match(dockerfile, /RUN rm -rf \/app\/data \/app\/database/);
 });
 
 test("keeps local data out of version control", async () => {

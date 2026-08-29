@@ -2,7 +2,7 @@ name: demolition
 
 services:
   demolition:
-    image: ${DEMOLITION_IMAGE:-ghcr.io/joshtrim/demolition:0.1.1}
+    image: ${DEMOLITION_IMAGE:-ghcr.io/joshtrim/demolition:0.1.2}
     init: true
     restart: unless-stopped
     user: "${DEMOLITION_UID:-1000}:${DEMOLITION_GID:-1000}"
