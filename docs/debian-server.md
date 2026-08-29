@@ -49,7 +49,7 @@ openssl rand -hex 32
 Edit `.env`:
 
 ```dotenv
-DEMOLITION_IMAGE=ghcr.io/joshtrim/demolition:0.1.2
+DEMOLITION_IMAGE=ghcr.io/joshtrim/demolition:0.1.3
 DEMOLITION_BIND_ADDRESS=127.0.0.1
 DEMOLITION_ALLOW_LAN=false
 DEMOLITION_UI_PORT=3000
