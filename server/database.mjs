@@ -50,6 +50,7 @@ database.exec(`
     creation_date TEXT,
     trim_start_seconds REAL,
     trim_end_seconds REAL,
+    listen_count INTEGER NOT NULL DEFAULT 0,
     uuid TEXT,
     owner_id TEXT,
     source_friend_id TEXT
@@ -190,7 +191,36 @@ database.exec(`
     PRIMARY KEY (session_token, sequence),
     FOREIGN KEY (session_token) REFERENCES remote_sessions(token) ON DELETE CASCADE
   );
+  CREATE TABLE IF NOT EXISTS track_comments (
+    uuid TEXT PRIMARY KEY,
+    demo_uuid TEXT NOT NULL,
+    payload TEXT NOT NULL
+  );
 `);
+
+function canonicalComment(comment) {
+  return JSON.stringify([comment.uuid, comment.demoUuid, comment.parentUuid || null, comment.authorId, comment.authorName, comment.body, comment.stance, comment.createdAt]);
+}
+
+function storeComment(comment) {
+  database.prepare("INSERT OR IGNORE INTO track_comments (uuid, demo_uuid, payload) VALUES (?, ?, ?)").run(comment.uuid, comment.demoUuid, JSON.stringify(comment));
+}
+
+export function listComments() {
+  return database.prepare("SELECT payload FROM track_comments WHERE demo_uuid IN (SELECT uuid FROM demos)").all().map((row) => JSON.parse(row.payload)).sort((a, b) => a.createdAt - b.createdAt);
+}
+
+export function postComment(input) {
+  if (!demoByUuid(input.demoUuid)) throw new Error("Demo unavailable");
+  const body = String(input.body || "").trim();
+  if (!body || body.length > 5000) throw new Error("Write a comment of 1–5000 characters");
+  const parent = input.parentUuid ? listComments().find((item) => item.uuid === input.parentUuid && item.demoUuid === input.demoUuid) : undefined;
+  if (input.parentUuid && !parent) throw new Error("Reply target unavailable");
+  const comment = { uuid: randomUUID(), demoUuid: input.demoUuid, parentUuid: parent?.uuid || null, authorId: owner.id, authorName: owner.display_name, authorPublicKey: owner.public_key, body, stance: ["agree", "disagree"].includes(input.stance) ? input.stance : "comment", createdAt: Date.now() };
+  comment.signature = sign(null, Buffer.from(canonicalComment(comment)), owner.private_key).toString("base64");
+  storeComment(comment);
+  return listComments();
+}
 
 function addColumn(table, column, definition) {
   const columns = database.prepare(`PRAGMA table_info(${table})`).all();
@@ -203,6 +233,7 @@ addColumn("demos", "source_friend_id", "TEXT");
 addColumn("demos", "favorite", "INTEGER NOT NULL DEFAULT 0");
 addColumn("demos", "trim_start_seconds", "REAL");
 addColumn("demos", "trim_end_seconds", "REAL");
+addColumn("demos", "listen_count", "INTEGER NOT NULL DEFAULT 0");
 addColumn("listens", "event_uuid", "TEXT");
 addColumn("listens", "demo_uuid", "TEXT");
 addColumn("listens", "author_id", "TEXT");
@@ -213,7 +244,7 @@ addColumn("listens", "received_at", "INTEGER");
 addColumn("timed_notes", "received_at", "INTEGER");
 addColumn("owner_identity", "feedback_seen_at", "INTEGER NOT NULL DEFAULT 0");
 
-database.exec("UPDATE listens SET received_at = listened_at WHERE received_at IS NULL; UPDATE timed_notes SET received_at = created_at WHERE received_at IS NULL;");
+database.exec("UPDATE listens SET received_at = listened_at WHERE received_at IS NULL; UPDATE timed_notes SET received_at = created_at WHERE received_at IS NULL; UPDATE demos SET listen_count = (SELECT COUNT(*) FROM listens WHERE listens.demo_id = demos.id) WHERE listen_count = 0;");
 
 database.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS idx_demos_uuid ON demos(uuid) WHERE uuid IS NOT NULL;
@@ -343,6 +374,7 @@ function mapDemo(row) {
     creationDate: row.creation_date ?? undefined,
     trimStartSeconds: row.trim_start_seconds == null ? undefined : Number(row.trim_start_seconds),
     trimEndSeconds: row.trim_end_seconds == null ? undefined : Number(row.trim_end_seconds),
+    listenCount: Number(row.listen_count || 0),
   };
 }
 
@@ -481,8 +513,8 @@ export function readWorkspace() {
 const insertProject = database.prepare("INSERT INTO projects (name, color, mood, position) VALUES (?, ?, ?, ?)");
 const insertTag = database.prepare("INSERT INTO tags (name, created_at) VALUES (?, ?)");
 const insertDemo = database.prepare(`
-  INSERT INTO demos (id, uuid, owner_id, source_friend_id, title, bpm, musical_key, duration, status, tags_json, note, next_action, rating, favorite, project, updated_at, audio_name, checksum, file_size, copy_verified_at, creation_date, trim_start_seconds, trim_end_seconds)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  INSERT INTO demos (id, uuid, owner_id, source_friend_id, title, bpm, musical_key, duration, status, tags_json, note, next_action, rating, favorite, project, updated_at, audio_name, checksum, file_size, copy_verified_at, creation_date, trim_start_seconds, trim_end_seconds, listen_count)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 const insertTrack = database.prepare("INSERT INTO tracklist (project, demo_id, position) VALUES (?, ?, ?)");
 const insertMedia = database.prepare("INSERT INTO project_media (id, project, kind, source, title, note, file_name, url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
@@ -578,7 +610,7 @@ export function writeWorkspace(payload) {
       demo.duration || "00:00", demo.status, JSON.stringify(Array.isArray(demo.tags) ? demo.tags : []), demo.note ?? "",
       demo.nextAction ?? "", demo.rating || 0, demo.favorite ? 1 : 0, demo.project || "Unsorted", demo.updatedAt || Date.now(),
       demo.audioName ?? null, demo.checksum ?? null, demo.fileSize ?? null, demo.copyVerifiedAt ?? null, demo.creationDate ?? null,
-      demo.trimStartSeconds ?? null, demo.trimEndSeconds ?? null,
+      demo.trimStartSeconds ?? null, demo.trimEndSeconds ?? null, Number(demo.listenCount) || 0,
     ));
     media.forEach((item) => insertMedia.run(item.id, item.project, item.kind, item.source, item.title, item.note ?? "", item.fileName ?? null, item.url ?? null, item.createdAt || Date.now()));
     listens.forEach((input) => {
@@ -690,7 +722,8 @@ export function buildSyncPackage(friendId) {
     sharedUuids.has(note.demoUuid) || (note.authorId === owner.id && remoteUuids.has(note.demoUuid)),
   );
   const revokedDemoUuids = database.prepare("SELECT demo_uuid FROM demo_share_revocations WHERE friend_id = ? ORDER BY revoked_at").all(friendId).map((row) => row.demo_uuid);
-  return { account: getAccount(), demos: sharedRows.map((row) => syncDemo(row, friendId)), listens, timedNotes, revokedDemoUuids };
+  const comments = listComments().filter((comment) => sharedUuids.has(comment.demoUuid) || (comment.authorId === owner.id && remoteUuids.has(comment.demoUuid)));
+  return { account: getAccount(), demos: sharedRows.map((row) => syncDemo(row, friendId)), listens, timedNotes, comments, revokedDemoUuids };
 }
 
 function canFriendAccessDemo(friendId, demoUuid) {
@@ -732,10 +765,10 @@ export function mergeSyncPackage(friendId, payload) {
       if (existing) {
         database.prepare(`
           UPDATE demos SET title = ?, bpm = ?, musical_key = ?, duration = ?, tags_json = ?, updated_at = ?,
-            checksum = ?, file_size = ?, creation_date = ?, trim_start_seconds = ?, trim_end_seconds = ?, source_friend_id = ? WHERE uuid = ?
-        `).run(demo.title, demo.bpm || 0, demo.key || "—", demo.duration || "00:00", JSON.stringify(demo.tags ?? []), demo.updatedAt || Date.now(), demo.checksum ?? null, demo.fileSize ?? null, demo.creationDate ?? null, demo.trimStartSeconds ?? null, demo.trimEndSeconds ?? null, friend.id, demo.uuid);
+            checksum = ?, file_size = ?, creation_date = ?, trim_start_seconds = ?, trim_end_seconds = ?, listen_count = ?, source_friend_id = ? WHERE uuid = ?
+        `).run(demo.title, demo.bpm || 0, demo.key || "—", demo.duration || "00:00", JSON.stringify(demo.tags ?? []), demo.updatedAt || Date.now(), demo.checksum ?? null, demo.fileSize ?? null, demo.creationDate ?? null, demo.trimStartSeconds ?? null, demo.trimEndSeconds ?? null, Number(demo.listenCount) || 0, friend.id, demo.uuid);
       } else {
-        insertDemo.run(nextNumericId("demos"), demo.uuid, friend.id, friend.id, demo.title, demo.bpm || 0, demo.key || "—", demo.duration || "00:00", "unheard", JSON.stringify(demo.tags ?? []), "", "", 0, 0, "Unsorted", demo.updatedAt || Date.now(), null, demo.checksum ?? null, demo.fileSize ?? null, null, demo.creationDate ?? null, demo.trimStartSeconds ?? null, demo.trimEndSeconds ?? null);
+        insertDemo.run(nextNumericId("demos"), demo.uuid, friend.id, friend.id, demo.title, demo.bpm || 0, demo.key || "—", demo.duration || "00:00", "unheard", JSON.stringify(demo.tags ?? []), "", "", 0, 0, "Unsorted", demo.updatedAt || Date.now(), null, demo.checksum ?? null, demo.fileSize ?? null, null, demo.creationDate ?? null, demo.trimStartSeconds ?? null, demo.trimEndSeconds ?? null, Number(demo.listenCount) || 0);
       }
     }
     for (const listen of incomingListens) {
@@ -775,6 +808,17 @@ export function mergeSyncPackage(friendId, payload) {
           signature = excluded.signature
         WHERE timed_notes.demo_uuid = excluded.demo_uuid AND timed_notes.author_id = excluded.author_id
       `).run(nextNumericId("timed_notes"), note.noteUuid, demo.id, note.demoUuid, note.authorId, note.authorName || "Friend", note.authorPublicKey, startSeconds, endSeconds, note.note.trim(), Number(note.createdAt) || Date.now(), note.signature, Date.now());
+    }
+    for (const comment of Array.isArray(payload.comments) ? payload.comments : []) {
+      const demo = demoByUuid(comment.demoUuid);
+      if (!demo || !comment.uuid || !comment.authorId || typeof comment.body !== "string" || !comment.body.trim() || comment.body.length > 5000 || !["comment", "agree", "disagree"].includes(comment.stance) || !Number.isFinite(comment.createdAt)) continue;
+      const allowed = demo.owner_id === owner.id
+        ? canFriendAccessDemo(friend.id, comment.demoUuid) && comment.authorId === friend.id && comment.authorPublicKey === friend.public_key
+        : demo.owner_id === friend.id;
+      if (!allowed) continue;
+      try {
+        if (verify(null, Buffer.from(canonicalComment(comment)), comment.authorPublicKey, Buffer.from(comment.signature, "base64"))) storeComment(comment);
+      } catch { /* Ignore invalid peer signatures. */ }
     }
     database.prepare("UPDATE friends SET last_synced_at = ?, status = 'connected' WHERE id = ?").run(Date.now(), friendId);
     database.exec("COMMIT");

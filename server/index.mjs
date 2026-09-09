@@ -9,7 +9,7 @@ import {
   acceptPairing, audioDirectory, authenticatePeer, buildSyncPackage, canFriendAccessAudio, closeRemoteSession,
   createPairingInvite, createRemoteSession, databasePath, dataDirectory, decodePairingInvite, demoByUuid, friendWithSecrets,
   getAccount, getRemoteSession, getStoredFile, markFeedbackSeen, markFriendSyncError, markPeerAudioStored, mediaDirectory,
-  mergeSyncPackage, readWorkspace, removeFriend, removeStoredFile, saveStoredFile,
+  mergeSyncPackage, readWorkspace, removeFriend, removeStoredFile, saveStoredFile, listComments, postComment,
   sendRemoteCommand, storedFileBytes, updateAccount, updateRemoteSessionState, upsertFriend, writeWorkspace,
 } from "./database.mjs";
 
@@ -357,6 +357,8 @@ const server = createServer(async (req, res) => {
     if (req.method === "OPTIONS") { res.writeHead(204, corsHeaders(req)); return res.end(); }
     if (!url.pathname.startsWith("/api/peer/") && !isOwnerApiRequest(req)) return sendJson(req, res, 403, { error: "This endpoint is available only through the owner gateway" });
     if (req.method === "GET" && url.pathname === "/api/health") return sendJson(req, res, 200, { ok: true, database: "sqlite", peerSync: true });
+    if (req.method === "GET" && url.pathname === "/api/comments") return sendJson(req, res, 200, listComments());
+    if (req.method === "POST" && url.pathname === "/api/comments") return sendJson(req, res, 201, postComment(await readJson(req)));
     if (req.method === "GET" && url.pathname === "/api/state") return sendJson(req, res, 200, readWorkspace());
     if (req.method === "PUT" && url.pathname === "/api/state") {
       writeWorkspace(await readJson(req));

@@ -32,6 +32,7 @@ test("server-renders the Demolition workspace", async () => {
   assert.match(html, /Listen mode/);
   assert.match(html, /Friends &amp; sync/);
   assert.match(html, /Friend feedback/);
+  assert.match(html, /Upvote rate · highest/);
   assert.match(html, /Favourites/);
   assert.match(html, /Favourite/);
   assert.doesNotMatch(html, /out of 5 stars|Unrated/);
@@ -47,14 +48,14 @@ test("uses the local SQLite and managed-file backend", async () => {
     const account = database.getAccount();
     database.writeWorkspace({
       projects: [{ name: "Album", color: "blue", mood: "" }],
-      demos: [{ id: 1, uuid: "demo-one", ownerId: account.id, title: "Test 12.4.19", bpm: 120, key: "C", duration: "01:00", status: "unheard", tags: ["test"], note: "", nextAction: "", rating: 0, favorite: true, project: "Album", updatedAt: 1, creationDate: "2019-04-12", trimStartSeconds: 4.5, trimEndSeconds: 52.25 }],
+      demos: [{ id: 1, uuid: "demo-one", ownerId: account.id, title: "Test 12.4.19", bpm: 120, key: "C", duration: "01:00", status: "unheard", tags: ["test"], note: "", nextAction: "", rating: 0, favorite: true, project: "Album", updatedAt: 1, creationDate: "2019-04-12", trimStartSeconds: 4.5, trimEndSeconds: 52.25, listenCount: 7 }],
       orders: { Album: [1] }, media: [],
       shares: [], listens: [{ id: 2, eventUuid: "listen-one", demoId: 1, demoUuid: "demo-one", authorId: account.id, authorName: account.displayName, verdict: "up", note: "Strong chorus", listenedAt: 2 }],
       timedNotes: [{ id: 3, noteUuid: "note-one", demoId: 1, demoUuid: "demo-one", authorId: account.id, authorName: account.displayName, startSeconds: 10, endSeconds: 18.5, note: "Bass change", createdAt: 3 }]
     });
     database.markFeedbackSeen(1234);
     const state = database.readWorkspace();
-    if (state.projects[0].name !== "Album" || state.tags[0].name !== "test" || state.demos[0].creationDate !== "2019-04-12" || state.demos[0].uuid !== "demo-one" || state.demos[0].favorite !== true || state.demos[0].trimStartSeconds !== 4.5 || state.demos[0].trimEndSeconds !== 52.25 || state.orders.Album[0] !== 1 || state.listens[0].verdict !== "up" || state.listens[0].note !== "Strong chorus" || state.listens[0].authorId !== account.id || !state.listens[0].receivedAt || !state.listens[0].signature || state.timedNotes[0].endSeconds !== 18.5 || !state.timedNotes[0].receivedAt || !state.timedNotes[0].signature || state.account.feedbackSeenAt !== 1234) process.exit(1);
+    if (state.projects[0].name !== "Album" || state.tags[0].name !== "test" || state.demos[0].creationDate !== "2019-04-12" || state.demos[0].uuid !== "demo-one" || state.demos[0].favorite !== true || state.demos[0].trimStartSeconds !== 4.5 || state.demos[0].trimEndSeconds !== 52.25 || state.demos[0].listenCount !== 7 || state.orders.Album[0] !== 1 || state.listens[0].verdict !== "up" || state.listens[0].note !== "Strong chorus" || state.listens[0].authorId !== account.id || !state.listens[0].receivedAt || !state.listens[0].signature || state.timedNotes[0].endSeconds !== 18.5 || !state.timedNotes[0].receivedAt || !state.timedNotes[0].signature || state.account.feedbackSeenAt !== 1234) process.exit(1);
     const remote = database.createRemoteSession();
     database.updateRemoteSessionState(remote.token, { active: true, title: "Test", currentTime: 12 }, 0);
     database.sendRemoteCommand(remote.token, { type: "play-pause" });
@@ -115,7 +116,14 @@ test("pairs local identities and exchanges signed ratings", async () => {
     second.mergeSyncPackage(firstAccount.id, first.buildSyncPackage(secondAccount.id));
     secondState = second.readWorkspace();
     if (!secondState.listens.some((listen) => listen.eventUuid === "alex-vote" && listen.verdict === "down" && listen.note === "changed owner vote") || !secondState.timedNotes.some((note) => note.noteUuid === "alex-note" && note.startSeconds === 6 && note.note === "Changed intro note")) process.exit(1);
-    const remoteDemo = secondState.demos[0];
+      const remoteDemo = secondState.demos[0];
+      const root = first.postComment({ demoUuid: "shared-demo", body: "Try a shorter intro" })[0];
+      second.mergeSyncPackage(firstAccount.id, first.buildSyncPackage(secondAccount.id));
+      const reply = second.postComment({ demoUuid: "shared-demo", parentUuid: root.uuid, body: "Agreed, four bars", stance: "agree" }).find((item) => item.parentUuid === root.uuid);
+      first.mergeSyncPackage(secondAccount.id, second.buildSyncPackage(firstAccount.id));
+      if (!first.listComments().some((item) => item.uuid === reply.uuid && item.stance === "agree")) throw new Error("Reply did not sync");
+      first.mergeSyncPackage(secondAccount.id, { account: secondAccount, comments: [{ ...reply, uuid: "forged", body: "Forged" }] });
+      if (first.listComments().some((item) => item.uuid === "forged")) throw new Error("Accepted forged comment");
     second.writeWorkspace({ ...secondState, listens: [...secondState.listens, { id: 3, eventUuid: "blair-vote", demoId: remoteDemo.id, demoUuid: remoteDemo.uuid, authorId: secondAccount.id, authorName: "Blair", verdict: "down", note: "friend vote", listenedAt: 3 }], timedNotes: [...secondState.timedNotes, { id: 5, noteUuid: "blair-note", demoId: remoteDemo.id, demoUuid: remoteDemo.uuid, authorId: secondAccount.id, authorName: "Blair", startSeconds: 12, endSeconds: 17, note: "Try a shorter fill", createdAt: 5 }] });
     first.mergeSyncPackage(secondAccount.id, second.buildSyncPackage(firstAccount.id));
     const firstState = first.readWorkspace();
@@ -172,7 +180,7 @@ test("ships a standalone image-based Compose deployment", async () => {
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../Dockerfile", import.meta.url), "utf8"),
   ]);
-  assert.match(compose, /image: \$\{DEMOLITION_IMAGE:-ghcr\.io\/joshtrim\/demolition:0\.1\.5\}/);
+  assert.match(compose, /image: \$\{DEMOLITION_IMAGE:-ghcr\.io\/joshtrim\/demolition:0\.1\.6\}/);
   assert.match(compose, /DEMOLITION_DATABASE_DIR/);
   assert.match(compose, /DEMOLITION_DATABASE_PATH: \/app\/database\/demolition\.sqlite/);
   assert.match(compose, /DEMOLITION_PROXY_TOKEN/);

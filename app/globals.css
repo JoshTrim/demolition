@@ -1188,6 +1188,20 @@ button,input,select,textarea,.project-tabs button b,.date-tag { border-radius:va
   }
 }
 
+.track-discussion { margin-top:20px; padding:20px; border:1px solid var(--px-border); background:var(--px-surface); }
+.track-discussion h2 { overflow-wrap:anywhere; font-size:16px; }
+.track-discussion p { white-space:pre-wrap; overflow-wrap:anywhere; font-size:13px; line-height:1.6; }
+.track-discussion ul { list-style:none; padding-left:0; }
+.track-discussion li ul { margin-left:12px; border-left:1px solid var(--px-border); padding-left:12px; }
+.track-discussion li li ul { margin-left:0; padding-left:8px; }
+.track-discussion article { padding:12px 0; border-bottom:1px solid var(--px-border); }
+.track-discussion header { display:flex; flex-wrap:wrap; gap:10px; font-size:12px; }
+.track-discussion time { color:var(--px-text-muted); }
+.track-discussion header span { color:var(--px-accent-2); }
+.track-discussion label { display:block; margin:12px 0; font-size:13px; }
+.track-discussion textarea,.track-discussion select { display:block; width:100%; margin-top:8px; padding:10px; color:var(--px-text); background:var(--px-bg-deep); border:1px solid var(--px-border); font-size:16px; }
+.track-discussion button { min-height:44px; }
+
 /* Sharing management */
 .sharing-page { display:grid; gap:14px; }
 .sharing-summary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
