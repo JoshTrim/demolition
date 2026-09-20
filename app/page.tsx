@@ -69,8 +69,9 @@ type RemotePlaybackState = {
   active: boolean; title: string; bpm: number; musicalKey: string; duration: number; currentTime: number;
   playing: boolean; index: number; total: number; up: number; down: number; score: number;
   vote?: "up" | "down"; hasPrevious: boolean; hasNext: boolean;
+  demoUuid?: string; tags?: string[]; availableTags?: string[];
 };
-type RemoteCommand = { type: "play-pause" | "previous" | "next" | "skip" | "up" | "down" | "seek"; seconds?: number };
+type RemoteCommand = { type: "play-pause" | "previous" | "next" | "skip" | "up" | "down" | "seek" | "set-tag" | "add-note"; seconds?: number; demoUuid?: string; tag?: string; applied?: boolean; note?: string };
 type RemoteSession = { token: string; state: Partial<RemotePlaybackState>; commandSequence: number; command?: RemoteCommand; commands?: Array<{ sequence: number; command: RemoteCommand }>; createdAt: number; updatedAt: number; expiresAt: number };
 type StatsFilter = { type: "duration" | "duration-min" | "duration-max" | "bpm" | "bpm-exact" | "bpm-min" | "bpm-max" | "key" | "project" | "status" | "date"; value: string; label: string };
 type StatsTrendMetric = "count" | "runtime" | "bpm";
@@ -588,6 +589,9 @@ function PhoneRemote({ token }: { token: string }) {
   const [sending, setSending] = useState(false);
   const [seeking, setSeeking] = useState(false);
   const [seekDraft, setSeekDraft] = useState(0);
+  const [tagDraft, setTagDraft] = useState("");
+  const [noteDraft, setNoteDraft] = useState<{ demoUuid: string; title: string; text: string }>();
+  const [noteStatus, setNoteStatus] = useState("");
 
   useEffect(() => {
     let active = true;
@@ -616,8 +620,10 @@ function PhoneRemote({ token }: { token: string }) {
       const next = await apiRequest<RemoteSession>(`/api/remote/sessions/${encodeURIComponent(token)}/commands`, { method: "POST", body: JSON.stringify(command) });
       setSession(next);
       setError("");
+      return true;
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "The command could not be sent.");
+      return false;
     } finally {
       setSending(false);
     }
@@ -647,7 +653,36 @@ function PhoneRemote({ token }: { token: string }) {
       <div className="phone-votes"><button className={state?.vote === "down" ? "selected" : ""} aria-pressed={state?.vote === "down"} disabled={!state?.active || sending} onClick={() => send({ type: "down" })}><b>↓</b><span>Thumbs down</span></button><button className={state?.vote === "up" ? "selected" : ""} aria-pressed={state?.vote === "up"} disabled={!state?.active || sending} onClick={() => send({ type: "up" })}><b>↑</b><span>Thumbs up</span></button></div>
     </section>
     <button className="phone-skip" disabled={!state?.active || !state.hasNext || sending} onClick={() => send({ type: "skip" })}>Skip without rating <span>→</span></button>
+    <form className="phone-note" onSubmit={async (event) => {
+      event.preventDefault();
+      if (!noteDraft?.text.trim()) return;
+      if (await send({ type: "add-note", demoUuid: noteDraft.demoUuid, note: noteDraft.text.trim() })) {
+        setNoteDraft(undefined);
+        setNoteStatus("Note sent to desktop for saving.");
+      }
+    }}>
+      <label className="rapid-note">Note for {noteDraft?.title || state?.title || "this demo"}
+        <textarea rows={4} maxLength={5000} placeholder="Add a note without rating" value={noteDraft?.text || ""} disabled={sending || (!noteDraft && !state?.active)} onChange={(event) => {
+          setNoteStatus("");
+          setNoteDraft({ demoUuid: noteDraft?.demoUuid || state?.demoUuid || "", title: noteDraft?.title || state?.title || "", text: event.target.value });
+        }} />
+      </label>
+      <button className="primary-button" disabled={sending || !noteDraft?.demoUuid || !noteDraft.text.trim()} type="submit">Add note</button>
+      {noteStatus && <p role="status">{noteStatus}</p>}
+      {error && <p role="alert">{error}</p>}
+    </form>
     <footer>Audio remains on the computer.</footer>
+    <section className="rapid-tags" aria-label="Track tags">
+      <div className="rapid-tags-head"><span>TAGS</span><small>Tap to apply or remove</small></div>
+      <div className="rapid-tag-list">{(state?.availableTags || []).map((tag) => {
+        const applied = (state?.tags || []).some((name) => name.toLocaleLowerCase() === tag.toLocaleLowerCase());
+        return <button key={tag} aria-pressed={applied} className={applied ? "selected" : ""} disabled={!state?.active || sending} onClick={() => send({ type: "set-tag", demoUuid: state?.demoUuid, tag, applied: !applied })}>{applied ? "✓ " : "+ "}{tag}</button>;
+      })}</div>
+      <form className="rapid-tag-create" onSubmit={(event) => { event.preventDefault(); const [tag] = parseTags(tagDraft); if (tag) void send({ type: "set-tag", demoUuid: state?.demoUuid, tag, applied: true }); }}>
+        <input aria-label="New track tag" placeholder="New tag" maxLength={100} value={tagDraft} onChange={(event) => setTagDraft(event.target.value)} disabled={!state?.active} />
+        <button disabled={!state?.active || sending || !tagDraft.trim()} type="submit">Add tag</button>
+      </form>
+    </section>
   </main>;
 }
 
@@ -1344,6 +1379,7 @@ export default function Home() {
   }, new Map<string, { id: string; name: string; up: number; down: number; score: number }>()).values()].sort((a, b) => Number(b.id === account?.id) - Number(a.id === account?.id) || b.score - a.score || a.name.localeCompare(b.name)) : [];
   const rapidStats = rapidDemo ? statsFor(rapidDemo.id) : statsFor(0);
   remoteStateRef.current = {
+    demoUuid: rapidDemo?.uuid, tags: rapidDemo?.tags || [], availableTags: tags.map((tag) => tag.name),
     active: Boolean(rapidMode && rapidDemo), title: rapidDemo?.title || "", bpm: rapidDemo?.bpm || 0,
     musicalKey: rapidDemo?.key || "—", duration: rapidDisplayDuration, currentTime: rapidCurrentTime,
     playing: rapidPlaying, index: rapidIndex, total: rapidIds.length, up: rapidStats.up, down: rapidStats.down,
@@ -2300,6 +2336,11 @@ export default function Home() {
 
   useEffect(() => {
     remoteCommandActionsRef.current = (command) => {
+      if (command.type === "add-note") {
+        const note = command.note?.trim();
+        if (note && command.demoUuid) setDemos((current) => current.map((demo) => demo.uuid === command.demoUuid ? { ...demo, note: [demo.note, note].filter(Boolean).join("\n\n"), updatedAt: Date.now() } : demo));
+        return;
+      }
       if (!rapidMode) return;
       if (command.type === "play-pause") toggleRapidPlayback();
       else if (command.type === "previous") previousRapid();
@@ -2307,6 +2348,17 @@ export default function Home() {
       else if (command.type === "up") recordListen("up");
       else if (command.type === "down") recordListen("down");
       else if (command.type === "seek" && Number.isFinite(command.seconds)) seekRapid(Number(command.seconds));
+      else if (command.type === "set-tag" && command.demoUuid === rapidDemo?.uuid && command.tag) {
+        const [entered] = parseTags(command.tag);
+        if (!entered) return;
+        const name = tags.find((tag) => tag.name.toLocaleLowerCase() === entered.toLocaleLowerCase())?.name || entered;
+        if (command.applied) setTags((current) => mergeTags(current, [name]));
+        setDemos((current) => current.map((demo) => {
+          if (demo.uuid !== command.demoUuid) return demo;
+          const remaining = demo.tags.filter((tag) => tag.toLocaleLowerCase() !== name.toLocaleLowerCase());
+          return { ...demo, tags: command.applied ? [...remaining, name] : remaining, updatedAt: Date.now() };
+        }));
+      }
     };
   });
 

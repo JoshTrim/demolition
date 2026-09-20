@@ -370,8 +370,10 @@ const server = createServer(async (req, res) => {
     const remoteCommandRoute = url.pathname.match(/^\/api\/remote\/sessions\/([A-Za-z0-9_-]{24,80})\/commands$/);
     if (req.method === "POST" && remoteCommandRoute) {
       const command = await readJson(req);
-      const allowed = new Set(["play-pause", "previous", "next", "skip", "up", "down", "seek"]);
+      const allowed = new Set(["play-pause", "previous", "next", "skip", "up", "down", "seek", "set-tag", "add-note"]);
       if (!allowed.has(command?.type)) return sendJson(req, res, 400, { error: "Unsupported remote command" });
+      if (command.type === "add-note" && (typeof command.note !== "string" || !command.note.trim() || command.note.length > 5000 || typeof command.demoUuid !== "string" || !command.demoUuid)) return sendJson(req, res, 400, { error: "Invalid note command" });
+      if (command.type === "set-tag" && (typeof command.tag !== "string" || !command.tag.trim() || command.tag.length > 100 || typeof command.demoUuid !== "string" || !command.demoUuid || typeof command.applied !== "boolean")) return sendJson(req, res, 400, { error: "Invalid tag command" });
       if (command.type === "seek" && (!Number.isFinite(Number(command.seconds)) || Number(command.seconds) < 0 || Number(command.seconds) > 86_400)) return sendJson(req, res, 400, { error: "Invalid seek position" });
       return sendJson(req, res, 202, sendRemoteCommand(remoteCommandRoute[1], command));
     }

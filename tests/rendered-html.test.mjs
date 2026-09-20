@@ -65,6 +65,9 @@ test("uses the local SQLite and managed-file backend", async () => {
     database.updateRemoteSessionState(remote.token, { active: true, title: "Test", currentTime: 13 }, 1);
     pending = database.getRemoteSession(remote.token, 1);
     if (pending.commands.length !== 1 || pending.commands[0].sequence !== 2) process.exit(1);
+    database.sendRemoteCommand(remote.token, { type: "add-note", demoUuid: "demo-one", note: "Shorten the intro" });
+    pending = database.getRemoteSession(remote.token, 2);
+    if (pending.commands.length !== 1 || pending.commands[0].command.demoUuid !== "demo-one" || pending.commands[0].command.note !== "Shorten the intro") process.exit(1);
     database.closeRemoteSession(remote.token);
     try { database.getRemoteSession(remote.token); process.exit(1); } catch {}
   `;
@@ -180,7 +183,7 @@ test("ships a standalone image-based Compose deployment", async () => {
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../Dockerfile", import.meta.url), "utf8"),
   ]);
-  assert.match(compose, /image: \$\{DEMOLITION_IMAGE:-ghcr\.io\/joshtrim\/demolition:0\.1\.6\}/);
+  assert.match(compose, /image: \$\{DEMOLITION_IMAGE:-ghcr\.io\/joshtrim\/demolition:0\.1\.7\}/);
   assert.match(compose, /DEMOLITION_DATABASE_DIR/);
   assert.match(compose, /DEMOLITION_DATABASE_PATH: \/app\/database\/demolition\.sqlite/);
   assert.match(compose, /DEMOLITION_PROXY_TOKEN/);
