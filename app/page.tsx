@@ -686,6 +686,47 @@ function PhoneRemote({ token }: { token: string }) {
   </main>;
 }
 
+type Attachment = { id: string; name: string; kind: string; size: number };
+
+function DemoAttachments({ demo }: { demo: Demo }) {
+  const [files, setFiles] = useState<Attachment[]>([]);
+  const [kind, setKind] = useState("stem");
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState("");
+  const endpoint = `/api/demos/${encodeURIComponent(demo.uuid)}/attachments`;
+  useEffect(() => {
+    let active = true;
+    apiRequest<Attachment[]>(endpoint).then((items) => { if (active) setFiles(items); }).catch(() => { if (active) setStatus("Could not load attachments. Reload to retry."); });
+    return () => { active = false; };
+  }, [endpoint]);
+  async function upload(event: React.ChangeEvent<HTMLInputElement>) {
+    const input = event.currentTarget;
+    const selected = Array.from(input.files || []);
+    if (!selected.length) return;
+    setBusy(true);
+    let completed = 0;
+    try {
+      await saveQueue;
+      for (const file of selected) {
+        setStatus(`Uploading ${completed + 1} of ${selected.length}: ${file.name}`);
+        const items = await apiRequest<Attachment[]>(`${endpoint}?kind=${kind}`, { method: "POST", headers: { "content-type": "application/octet-stream", "x-file-name": encodeURIComponent(file.name) }, body: file });
+        setFiles(items);
+        completed++;
+      }
+      setStatus(`${completed} attachment${completed === 1 ? "" : "s"} saved.`);
+    } catch (error) { setStatus(`${completed} saved. ${error instanceof Error ? error.message : "Upload failed"}. Select remaining files to retry.`); }
+    finally { setBusy(false); input.value = ""; }
+  }
+  return <section className="track-discussion demo-attachments" aria-label="Demo attachments">
+    <h2>Stems &amp; project files · {demo.title}</h2>
+    <p>Uploads are safe copies. For a complete Ableton project, use Collect All and Save, then upload a ZIP of the project folder. Attachments stay on this instance and are not shared with friends.</p>
+    <label>File type<select value={kind} disabled={busy} onChange={(event) => setKind(event.target.value)}><option value="stem">Stems</option><option value="project">Project files</option></select></label>
+    <label>Add files<input type="file" multiple disabled={busy} onChange={upload} /></label>
+    <p role="status">{status}</p>
+    <ul>{files.map((file) => <li key={file.id}><a href={apiUrl(`/api/attachments/${file.id}`)} download>{file.name}</a><small> · {file.kind === "stem" ? "Stem" : "Project"} · {(file.size / 1024 / 1024).toFixed(1)} MB</small></li>)}</ul>
+  </section>;
+}
+
 type TrackComment = { uuid: string; demoUuid: string; parentUuid: string | null; authorId: string; authorName: string; body: string; stance: string; createdAt: number };
 
 function TrackDiscussion({ demo }: { demo: Demo }) {
@@ -2914,6 +2955,7 @@ export default function Home() {
 
             {selected && (view !== "project" || project === "Unsorted") && <aside className="detail-panel"><div className="detail-top"><span className="eyebrow">SELECTED DEMO</span><div className="detail-actions"><button className={`favorite-button ${selected.favorite ? "active" : ""}`} aria-pressed={selected.favorite} aria-label={selected.favorite ? `Remove ${selected.title} from favourites` : `Add ${selected.title} to favourites`} onClick={() => toggleFavorite(selected.id)}>{selected.favorite ? "★ Favourite" : "☆ Favourite"}</button><button className="more-button" onClick={openEdit}>Edit</button></div></div><div className={`focus-cover cover-${selected.id % 4}`}><span>✳</span></div><h3>{selected.title}</h3><div className="focus-meta">{selected.bpm ? `${selected.bpm} BPM` : "BPM —"} <i>·</i> {selected.key} <i>·</i> {selected.duration}</div><button className="detect-bpm" disabled={detectingId === selected.id} onClick={detectSelectedBpm}>{detectingId === selected.id ? "◌ Analyzing tempo…" : "⌁ Detect BPM again"}</button><div className="listen-summary" aria-label={"Listen score " + selectedStats.score}><span><b>{selectedStats.up}</b> ↑</span><span><b>{selectedStats.down}</b> ↓</span><strong>{selectedStats.score > 0 ? "+" + selectedStats.score : selectedStats.score}</strong><small>{selectedStats.count} {selectedStats.count === 1 ? "listen" : "listens"} · You {selectedOwnerScore > 0 ? "+" + selectedOwnerScore : selectedOwnerScore} · Friends {selectedFriendScore > 0 ? "+" + selectedFriendScore : selectedFriendScore}</small></div>{selectedScoreBreakdown}{selectedListenHistory}{selectedTimedNoteHistory}{audioUrl ? <><audio ref={detailAudioRef} className="audio-player" src={audioUrl} controls preload="metadata" onError={() => setPlaybackError("This audio copy could not be played by the browser.")} onCanPlay={() => setPlaybackError("")} onTimeUpdate={(event) => setDetailCurrentTime(event.currentTarget.currentTime)} onSeeked={(event) => setDetailCurrentTime(event.currentTarget.currentTime)}><track kind="captions" src="data:text/vtt,WEBVTT" srcLang="en" label="Instrumental audio" /></audio>{playbackError && <small className="playback-error" role="status">{playbackError}</small>}<button className="remove-copy" onClick={removeSelectedAudioCopy}>Remove local copy</button></> : <button className="audio-empty" onClick={() => attachRef.current?.click()}><span>＋</span> Attach an audio bounce</button>}<input ref={attachRef} className="sr-only" type="file" accept="audio/*,.wav,.aif,.aiff,.mp3,.m4a,.flac" onChange={attachAudio} />{selectedSharing}<div className="detail-section"><div className="detail-section-head"><span>NEXT ACTION</span><button onClick={openEdit}>edit</button></div><p className="next-action">→ {selected.nextAction || "No next action set"}</p></div><div className="detail-section"><div className="detail-section-head"><span>NOTES</span><button onClick={openEdit}>edit</button></div><p>{selected.note || "No notes yet."}</p></div><div className="detail-section"><div className="detail-section-head"><span>PROJECT</span><button onClick={openEdit}>change</button></div><div className="assigned-project"><span className="project-dot coral" />{selected.project}<span>↗</span></div></div><button className="open-demo" onClick={openEdit}>Edit demo <span>↗</span></button></aside>}
           </div></>}
+          {selected && <DemoAttachments key={`attachments-${selected.uuid}`} demo={selected} />}
           {selected && <TrackDiscussion key={selected.uuid} demo={selected} />}
           <div className="bottom-note"><span className="spark">✳</span><span><strong>{revisitDemos.length} demos in the review queue.</strong> Sorted by oldest update.</span><button onClick={() => { setStatsFilters([]); setView("revisit"); setProject("All demos"); }}>Open revisit queue →</button></div>
           </>}

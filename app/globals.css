@@ -1242,6 +1242,10 @@ button,input,select,textarea,.project-tabs button b,.date-tag { border-radius:va
 }
 
 .track-discussion { margin-top:20px; padding:20px; border:1px solid var(--px-border); background:var(--px-surface); }
+.demo-attachments input[type="file"] { display:block; width:100%; min-width:0; margin-top:8px; padding:12px; border:1px solid var(--px-border); font-size:16px; }
+.demo-attachments li { padding:10px 0; overflow-wrap:anywhere; }
+.demo-attachments a { color:var(--px-accent-2); text-decoration:underline; }
+.demo-attachments small { color:var(--px-text-muted); }
 .track-discussion h2 { overflow-wrap:anywhere; font-size:16px; }
 .track-discussion p { white-space:pre-wrap; overflow-wrap:anywhere; font-size:13px; line-height:1.6; }
 .track-discussion ul { list-style:none; padding-left:0; }

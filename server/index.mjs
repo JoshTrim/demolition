@@ -1,4 +1,4 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createReadStream, createWriteStream, existsSync } from "node:fs";
 import { mkdir, readFile, rename, stat, statfs, unlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -6,6 +6,7 @@ import path from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import {
+  listAttachments, saveAttachment, getAttachment,
   acceptPairing, audioDirectory, authenticatePeer, buildSyncPackage, canFriendAccessAudio, closeRemoteSession,
   createPairingInvite, createRemoteSession, databasePath, dataDirectory, decodePairingInvite, demoByUuid, friendWithSecrets,
   getAccount, getRemoteSession, getStoredFile, markFeedbackSeen, markFriendSyncError, markPeerAudioStored, mediaDirectory,
@@ -415,6 +416,36 @@ const server = createServer(async (req, res) => {
       return sendJson(req, res, 200, {
         usage, quota: Number(filesystem.bavail) * Number(filesystem.bsize) + usage, persisted: true,
       });
+    }
+    const attachmentList = url.pathname.match(/^\/api\/demos\/([^/]+)\/attachments$/);
+    if (attachmentList && ["GET", "POST"].includes(req.method)) {
+      const demoUuid = decodeURIComponent(attachmentList[1]);
+      if (!demoByUuid(demoUuid)) return sendJson(req, res, 404, { error: "Demo not found" });
+      if (req.method === "GET") return sendJson(req, res, 200, listAttachments(demoUuid));
+      const kind = url.searchParams.get("kind");
+      if (!["stem", "project"].includes(kind)) return sendJson(req, res, 400, { error: "Choose stems or project files" });
+      const directory = path.join(dataDirectory, "attachments");
+      await mkdir(directory, { recursive: true });
+      const id = randomUUID();
+      const destination = path.join(directory, id);
+      try {
+        await pipeline(req, createWriteStream(destination, { flags: "wx" }));
+        saveAttachment(id, demoUuid, safeFileName(req.headers["x-file-name"]), kind, (await stat(destination)).size);
+      } catch (error) {
+        await unlink(destination).catch(() => undefined);
+        throw error;
+      }
+      return sendJson(req, res, 201, listAttachments(demoUuid));
+    }
+    const attachmentDownload = url.pathname.match(/^\/api\/attachments\/([a-f0-9-]{36})$/);
+    if (attachmentDownload && req.method === "GET") {
+      const record = getAttachment(attachmentDownload[1]);
+      if (!record || !demoByUuid(record.demo_uuid)) return sendJson(req, res, 404, { error: "Attachment not found" });
+      const file = path.join(dataDirectory, "attachments", record.id);
+      await stat(file);
+      res.writeHead(200, { ...corsHeaders(req), "Content-Type": "application/octet-stream", "X-Content-Type-Options": "nosniff", "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(record.name).replace(/'/g, "%27")}`, "Content-Length": record.size });
+      await pipeline(createReadStream(file), res);
+      return;
     }
     const fileRoute = routeFile(url);
     if (fileRoute && req.method === "POST") return await uploadFile(req, res, fileRoute.type, fileRoute.id);

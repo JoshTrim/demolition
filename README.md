@@ -9,6 +9,7 @@ Demolition does not require external hosting or cloud storage.
 - Project and demo metadata is stored in `data/demolition.sqlite` during local development.
 - Imported audio copies are stored in `data/audio/`.
 - Imported moodboard files are stored in `data/media/`.
+- Per-demo stems and project files are stored as managed copies in `data/attachments/`, with their metadata in SQLite. Select a demo and use **Stems & project files** to upload multiple files or download them later. ZIP complete project folders (including samples); uploading an Ableton `.als` alone does not include its referenced audio. Attachments are private to this instance and are not part of friend sync or the JSON metadata export. Back up the database and the whole data directory together.
 - The entire `data/` directory is excluded from Git.
 - Imported source files are read-only inputs. Demolition works with its own copies.
 
@@ -120,7 +121,7 @@ openssl rand -hex 32
 Copy the generated token into `.env`, then set each value for your server:
 
 ```dotenv
-DEMOLITION_IMAGE=ghcr.io/joshtrim/demolition:0.1.7
+DEMOLITION_IMAGE=ghcr.io/joshtrim/demolition:0.1.8
 DEMOLITION_BIND_ADDRESS=127.0.0.1
 DEMOLITION_ALLOW_LAN=false
 DEMOLITION_UI_PORT=5030

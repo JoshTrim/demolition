@@ -13,6 +13,19 @@ mkdirSync(mediaDirectory, { recursive: true });
 mkdirSync(path.dirname(databasePath), { recursive: true });
 
 const database = new DatabaseSync(databasePath);
+database.exec(`CREATE TABLE IF NOT EXISTS demo_attachments (
+  id TEXT PRIMARY KEY, demo_uuid TEXT NOT NULL, name TEXT NOT NULL,
+  kind TEXT NOT NULL, size INTEGER NOT NULL, created_at INTEGER NOT NULL
+)`);
+export function listAttachments(demoUuid) {
+  return database.prepare("SELECT * FROM demo_attachments WHERE demo_uuid = ? ORDER BY created_at, id").all(demoUuid);
+}
+export function saveAttachment(id, demoUuid, name, kind, size) {
+  database.prepare("INSERT INTO demo_attachments VALUES (?, ?, ?, ?, ?, ?)").run(id, demoUuid, name, kind, size, Date.now());
+}
+export function getAttachment(id) {
+  return database.prepare("SELECT * FROM demo_attachments WHERE id = ?").get(id);
+}
 database.exec("PRAGMA foreign_keys = ON");
 database.exec("PRAGMA journal_mode = WAL");
 database.exec("PRAGMA synchronous = NORMAL");
@@ -873,5 +886,5 @@ export function removeStoredFile(type, id) {
 }
 
 export function storedFileBytes() {
-  return Number(database.prepare("SELECT COALESCE(SUM(size_bytes), 0) AS total FROM stored_files").get().total);
+  return Number(database.prepare("SELECT COALESCE(SUM(size_bytes), 0) AS total FROM stored_files").get().total) + Number(database.prepare("SELECT COALESCE(SUM(size), 0) AS total FROM demo_attachments").get().total);
 }
