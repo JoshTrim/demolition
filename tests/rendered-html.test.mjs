@@ -30,9 +30,14 @@ test("server-renders the Demolition workspace", async () => {
   assert.match(html, /Bulk import/);
   assert.match(html, /Manage tags/);
   assert.match(html, /Listen mode/);
+  assert.match(html, /Library navigation/);
+  assert.match(html, /Friends navigation/);
+  assert.match(html, /Library tools/);
   assert.match(html, /Friends &amp; sync/);
   assert.match(html, /Friend feedback/);
   assert.match(html, /Upvote rate · highest/);
+  assert.match(html, /Unlistened first · fewest listens/);
+  assert.match(html, /Most listened/);
   assert.match(html, /Favourites/);
   assert.match(html, /Favourite/);
   assert.doesNotMatch(html, /out of 5 stars|Unrated/);
@@ -56,8 +61,9 @@ test("uses the local SQLite and managed-file backend", async () => {
     database.markFeedbackSeen(1234);
     const state = database.readWorkspace();
     database.saveAttachment("attachment-test", "demo-one", "Project.zip", "project", 2048);
+    database.saveAttachment("stem-test", "demo-one", "Drums.wav", "stem", 1024);
     database.writeWorkspace(state);
-    if (database.listAttachments("demo-one").length !== 1 || database.getAttachment("attachment-test").name !== "Project.zip" || database.storedFileBytes() < 2048) process.exit(1);
+    if (database.listAttachments("demo-one").length !== 2 || database.getAttachment("attachment-test").name !== "Project.zip" || database.getAttachment("stem-test").kind !== "stem" || database.storedFileBytes() < 3072) process.exit(1);
     if (state.projects[0].name !== "Album" || state.tags[0].name !== "test" || state.demos[0].creationDate !== "2019-04-12" || state.demos[0].uuid !== "demo-one" || state.demos[0].favorite !== true || state.demos[0].trimStartSeconds !== 4.5 || state.demos[0].trimEndSeconds !== 52.25 || state.demos[0].listenCount !== 7 || state.orders.Album[0] !== 1 || state.listens[0].verdict !== "up" || state.listens[0].note !== "Strong chorus" || state.listens[0].authorId !== account.id || !state.listens[0].receivedAt || !state.listens[0].signature || state.timedNotes[0].endSeconds !== 18.5 || !state.timedNotes[0].receivedAt || !state.timedNotes[0].signature || state.account.feedbackSeenAt !== 1234) process.exit(1);
     const remote = database.createRemoteSession();
     database.updateRemoteSessionState(remote.token, { active: true, title: "Test", currentTime: 12 }, 0);
@@ -186,7 +192,7 @@ test("ships a standalone image-based Compose deployment", async () => {
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../Dockerfile", import.meta.url), "utf8"),
   ]);
-  assert.match(compose, /image: \$\{DEMOLITION_IMAGE:-ghcr\.io\/joshtrim\/demolition:0\.1\.8\}/);
+  assert.match(compose, /image: \$\{DEMOLITION_IMAGE:-ghcr\.io\/joshtrim\/demolition:0\.1\.9\}/);
   assert.match(compose, /DEMOLITION_DATABASE_DIR/);
   assert.match(compose, /DEMOLITION_DATABASE_PATH: \/app\/database\/demolition\.sqlite/);
   assert.match(compose, /DEMOLITION_PROXY_TOKEN/);
