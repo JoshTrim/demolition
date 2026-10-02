@@ -26,6 +26,25 @@ export function saveAttachment(id, demoUuid, name, kind, size) {
 export function getAttachment(id) {
   return database.prepare("SELECT * FROM demo_attachments WHERE id = ?").get(id);
 }
+export function removeDemo(uuid) {
+  const demo = demoByUuid(uuid);
+  if (!demo) return;
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    for (const friend of database.prepare("SELECT id FROM friends").all()) {
+      insertDemoShareRevocation.run(uuid, friend.id, Date.now());
+    }
+    database.prepare("DELETE FROM demo_shares WHERE demo_uuid = ?").run(uuid);
+    database.prepare("DELETE FROM track_comments WHERE demo_uuid = ?").run(uuid);
+    database.prepare("DELETE FROM demo_attachments WHERE demo_uuid = ?").run(uuid);
+    removeStoredFile("audio", demo.id);
+    database.prepare("DELETE FROM demos WHERE uuid = ?").run(uuid);
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+}
 database.exec("PRAGMA foreign_keys = ON");
 database.exec("PRAGMA journal_mode = WAL");
 database.exec("PRAGMA synchronous = NORMAL");

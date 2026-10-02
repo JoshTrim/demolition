@@ -6,7 +6,7 @@ import path from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import {
-  listAttachments, saveAttachment, getAttachment,
+  listAttachments, saveAttachment, getAttachment, removeDemo,
   acceptPairing, audioDirectory, authenticatePeer, buildSyncPackage, canFriendAccessAudio, closeRemoteSession,
   createPairingInvite, createRemoteSession, databasePath, dataDirectory, decodePairingInvite, demoByUuid, friendWithSecrets,
   getAccount, getRemoteSession, getStoredFile, markFeedbackSeen, markFriendSyncError, markPeerAudioStored, mediaDirectory,
@@ -416,6 +416,24 @@ const server = createServer(async (req, res) => {
       return sendJson(req, res, 200, {
         usage, quota: Number(filesystem.bavail) * Number(filesystem.bsize) + usage, persisted: true,
       });
+    }
+    const demoRemoval = url.pathname.match(/^\/api\/demos\/([^/]+)$/);
+    if (demoRemoval && req.method === "DELETE") {
+      const uuid = decodeURIComponent(demoRemoval[1]);
+      const demo = demoByUuid(uuid);
+      if (!demo) return sendJson(req, res, 404, { error: "Demo not found" });
+      const record = getStoredFile("audio", demo.id);
+      const targets = listAttachments(uuid).map((item) => [path.join(dataDirectory, "attachments"), item.id]);
+      if (record) {
+        targets.push([audioDirectory, record.storage_name]);
+        targets.push([audioDirectory, `.${demo.id}-${record.updated_at}.playback.wav`]);
+      }
+      for (const [directory, name] of targets) {
+        if (path.basename(name) !== name) throw new Error("Invalid managed file path");
+        await unlink(path.join(directory, name)).catch((error) => { if (error.code !== "ENOENT") throw error; });
+      }
+      removeDemo(uuid);
+      return sendJson(req, res, 200, { ok: true });
     }
     const attachmentList = url.pathname.match(/^\/api\/demos\/([^/]+)\/attachments$/);
     if (attachmentList && ["GET", "POST"].includes(req.method)) {
