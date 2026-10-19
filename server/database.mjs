@@ -46,6 +46,19 @@ export function removeDemo(uuid) {
   }
 }
 database.exec("PRAGMA foreign_keys = ON");
+database.exec(`CREATE TABLE IF NOT EXISTS project_tracklist_versions (
+  project TEXT PRIMARY KEY, payload TEXT NOT NULL
+)`);
+export function readTracklistVersions(project) {
+  const row = database.prepare("SELECT payload FROM project_tracklist_versions WHERE project = ?").get(project);
+  const valid = new Set(database.prepare("SELECT id FROM demos WHERE project = ?").all(project).map((demo) => Number(demo.id)));
+  return (row ? JSON.parse(row.payload) : []).map((list) => ({ ...list, ids: list.ids.filter((id) => valid.has(id)) }));
+}
+export function saveTracklistVersions(project, lists) {
+  if (!Array.isArray(lists) || lists.length > 100 || lists.some((list) => typeof list.id !== "string" || typeof list.name !== "string" || !list.name.trim() || list.name.length > 100 || !Array.isArray(list.ids) || list.ids.some((id) => !Number.isSafeInteger(id)))) throw new Error("Invalid tracklists");
+  database.prepare("INSERT INTO project_tracklist_versions VALUES (?, ?) ON CONFLICT(project) DO UPDATE SET payload = excluded.payload").run(project, JSON.stringify(lists));
+  return readTracklistVersions(project);
+}
 database.exec("PRAGMA journal_mode = WAL");
 database.exec("PRAGMA synchronous = NORMAL");
 database.exec(`
@@ -514,7 +527,7 @@ export function closeRemoteSession(token) {
 }
 
 export function readWorkspace() {
-  const projects = listProjects.all();
+  const projects = listProjects.all().map((project) => ({ ...project, tracklists: readTracklistVersions(project.name) }));
   const tags = listTags.all().map((row) => ({ name: row.name, createdAt: Number(row.created_at) }));
   const demos = listDemos.all().map(mapDemo);
   const orders = {};
@@ -665,6 +678,10 @@ export function writeWorkspace(payload) {
       if (!Array.isArray(ids)) continue;
       ids.forEach((id, position) => { if (demoIds.has(Number(id))) insertTrack.run(project, id, position); });
     }
+    for (const project of projects) {
+      if (project.tracklists !== undefined) saveTracklistVersions(project.name, project.tracklists);
+    }
+    database.exec("DELETE FROM project_tracklist_versions WHERE project NOT IN (SELECT name FROM projects)");
     database.exec("COMMIT");
   } catch (error) {
     database.exec("ROLLBACK");

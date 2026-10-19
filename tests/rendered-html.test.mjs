@@ -52,7 +52,7 @@ test("uses the local SQLite and managed-file backend", async () => {
     const database = await import(${JSON.stringify(databaseModule)} + "?test=" + Date.now());
     const account = database.getAccount();
     database.writeWorkspace({
-      projects: [{ name: "Album", color: "blue", mood: "" }],
+      projects: [{ name: "Album", color: "blue", mood: "", tracklists: [{ id: "alternate", name: "Alternate order", ids: [1] }, { id: "empty", name: "Empty order", ids: [] }] }],
       demos: [{ id: 1, uuid: "demo-one", ownerId: account.id, title: "Test 12.4.19", bpm: 120, key: "C", duration: "01:00", status: "unheard", tags: ["test"], note: "", nextAction: "", rating: 0, favorite: true, project: "Album", updatedAt: 1, creationDate: "2019-04-12", trimStartSeconds: 4.5, trimEndSeconds: 52.25, listenCount: 7 }],
       orders: { Album: [1] }, media: [],
       shares: [], listens: [{ id: 2, eventUuid: "listen-one", demoId: 1, demoUuid: "demo-one", authorId: account.id, authorName: account.displayName, verdict: "up", note: "Strong chorus", listenedAt: 2 }],
@@ -63,6 +63,7 @@ test("uses the local SQLite and managed-file backend", async () => {
     database.saveAttachment("attachment-test", "demo-one", "Project.zip", "project", 2048);
     database.saveAttachment("stem-test", "demo-one", "Drums.wav", "stem", 1024);
     database.writeWorkspace(state);
+    if (database.readWorkspace().projects[0].tracklists[0].ids[0] !== 1 || database.readWorkspace().projects[0].tracklists.length !== 2) process.exit(1);
     if (database.listAttachments("demo-one").length !== 2 || database.getAttachment("attachment-test").name !== "Project.zip" || database.getAttachment("stem-test").kind !== "stem" || database.storedFileBytes() < 3072) process.exit(1);
     if (state.projects[0].name !== "Album" || state.tags[0].name !== "test" || state.demos[0].creationDate !== "2019-04-12" || state.demos[0].uuid !== "demo-one" || state.demos[0].favorite !== true || state.demos[0].trimStartSeconds !== 4.5 || state.demos[0].trimEndSeconds !== 52.25 || state.demos[0].listenCount !== 7 || state.orders.Album[0] !== 1 || state.listens[0].verdict !== "up" || state.listens[0].note !== "Strong chorus" || state.listens[0].authorId !== account.id || !state.listens[0].receivedAt || !state.listens[0].signature || state.timedNotes[0].endSeconds !== 18.5 || !state.timedNotes[0].receivedAt || !state.timedNotes[0].signature || state.account.feedbackSeenAt !== 1234) process.exit(1);
     const remote = database.createRemoteSession();
@@ -81,6 +82,7 @@ test("uses the local SQLite and managed-file backend", async () => {
     try { database.getRemoteSession(remote.token); process.exit(1); } catch {}
     database.removeDemo("demo-one");
     const removed = database.readWorkspace();
+    if (removed.projects[0].tracklists[0].ids.length) process.exit(1);
     if (removed.demos.length || removed.listens.length || removed.timedNotes.length || database.listAttachments("demo-one").length || database.getStoredFile("audio", 1)) process.exit(1);
     database.removeDemo("demo-one");
   `;
@@ -196,7 +198,7 @@ test("ships a standalone image-based Compose deployment", async () => {
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../Dockerfile", import.meta.url), "utf8"),
   ]);
-  assert.match(compose, /image: \$\{DEMOLITION_IMAGE:-ghcr\.io\/joshtrim\/demolition:0\.1\.10\}/);
+  assert.match(compose, /image: \$\{DEMOLITION_IMAGE:-ghcr\.io\/joshtrim\/demolition:0\.1\.11\}/);
   assert.match(compose, /DEMOLITION_DATABASE_DIR/);
   assert.match(compose, /DEMOLITION_DATABASE_PATH: \/app\/database\/demolition\.sqlite/);
   assert.match(compose, /DEMOLITION_PROXY_TOKEN/);
