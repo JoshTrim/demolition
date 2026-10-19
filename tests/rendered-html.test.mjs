@@ -8,6 +8,27 @@ import { promisify } from "node:util";
 
 const run = promisify(execFile);
 
+test("project candidate builder paginates a large library and renders tracklist controls", async () => {
+  const { transpileModule, ModuleKind, JsxEmit } = await import("typescript");
+  const { createElement } = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const source = await readFile(new URL("../app/project-builder.tsx", import.meta.url), "utf8");
+  const output = transpileModule(source, { compilerOptions: { module: ModuleKind.ESNext, jsx: JsxEmit.ReactJSX } }).outputText
+    .replaceAll('from "react"', `from ${JSON.stringify(import.meta.resolve("react"))}`)
+    .replaceAll('from "react/jsx-runtime"', `from ${JSON.stringify(import.meta.resolve("react/jsx-runtime"))}`);
+  const { default: Builder } = await import(`data:text/javascript;base64,${Buffer.from(output).toString("base64")}`);
+  const tracks = Array.from({ length: 105 }, (_, id) => ({ id: id + 1, title: `Demo ${id + 1}`, bpm: 120, tags: ["Batch A"], duration: "03:00", favorite: id === 0 }));
+  const html = renderToStaticMarkup(createElement(Builder, { tracks, order: [105], onOrder() {}, onFavorite() {}, onOpen() {}, statsFor: () => ({ up: 3, down: 1, score: 2, count: 4 }), audioUrl: () => "", onAudition() {} }));
+  assert.equal((html.match(/class="builder-candidate"/g) || []).length, 20);
+  assert.match(html, /Page 1 of 6/);
+  assert.match(html, /104 matching/);
+  assert.match(html, /75% up/);
+  assert.match(html, /3m 0s/);
+  assert.match(html, /Move Demo 105 up/);
+  assert.match(html, /Add selected/);
+  assert.match(html, /Select page/);
+});
+
 async function render() {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
   workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
@@ -198,7 +219,7 @@ test("ships a standalone image-based Compose deployment", async () => {
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../Dockerfile", import.meta.url), "utf8"),
   ]);
-  assert.match(compose, /image: \$\{DEMOLITION_IMAGE:-ghcr\.io\/joshtrim\/demolition:0\.1\.12\}/);
+  assert.match(compose, /image: \$\{DEMOLITION_IMAGE:-ghcr\.io\/joshtrim\/demolition:0\.1\.13\}/);
   assert.match(compose, /DEMOLITION_DATABASE_DIR/);
   assert.match(compose, /DEMOLITION_DATABASE_PATH: \/app\/database\/demolition\.sqlite/);
   assert.match(compose, /DEMOLITION_PROXY_TOKEN/);
