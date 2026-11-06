@@ -461,6 +461,11 @@ const server = createServer(async (req, res) => {
       if (!record || !demoByUuid(record.demo_uuid)) return sendJson(req, res, 404, { error: "Attachment not found" });
       const file = path.join(dataDirectory, "attachments", record.id);
       await stat(file);
+      if (url.searchParams.get("play") === "1" && record.kind === "stem" && /\.aiff?$/i.test(record.name)) {
+        const wav = aiffToWav(await readFile(file));
+        res.writeHead(200, { ...corsHeaders(req), "Content-Type": "audio/wav", "Content-Length": wav.length, "X-Content-Type-Options": "nosniff" });
+        return res.end(wav);
+      }
       res.writeHead(200, { ...corsHeaders(req), "Content-Type": "application/octet-stream", "X-Content-Type-Options": "nosniff", "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(record.name).replace(/'/g, "%27")}`, "Content-Length": record.size });
       await pipeline(createReadStream(file), res);
       return;

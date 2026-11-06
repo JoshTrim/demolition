@@ -6,6 +6,9 @@ import QRCode from "qrcode";
 import DemoSearch from "./demo-search";
 import ProjectTracklists, { type TracklistVersion } from "./project-tracklists";
 import ProjectBuilder from "./project-builder";
+import SetImport, { type SetPlan } from "./set-import";
+import DemoMixer from "./demo-mixer";
+import { archiveProject } from "./set-files";
 
 type Status = "unheard" | "revisit" | "shaping" | "finished";
 type Demo = {
@@ -691,7 +694,7 @@ function PhoneRemote({ token }: { token: string }) {
 
 type Attachment = { id: string; name: string; kind: string; size: number };
 
-function DemoAttachments({ demo }: { demo: Demo }) {
+function DemoAttachments({ demo, revision }: { demo: Demo; revision: number }) {
   const [files, setFiles] = useState<Attachment[]>([]);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
@@ -700,7 +703,7 @@ function DemoAttachments({ demo }: { demo: Demo }) {
     let active = true;
     apiRequest<Attachment[]>(endpoint).then((items) => { if (active) setFiles(items); }).catch(() => { if (active) setStatus("Could not load attachments. Reload to retry."); });
     return () => { active = false; };
-  }, [endpoint]);
+  }, [endpoint, revision]);
   async function upload(event: React.ChangeEvent<HTMLInputElement>, kind: "stem" | "project") {
     const input = event.currentTarget;
     const selected = Array.from(input.files || []);
@@ -721,6 +724,7 @@ function DemoAttachments({ demo }: { demo: Demo }) {
   }
   return <section className="track-discussion demo-attachments" aria-label="Demo attachments">
     <h2>Stems &amp; project files · {demo.title}</h2>
+    <DemoMixer files={files} master={demo.audioName ? apiUrl(`/api/audio/${demo.id}?v=${demo.checksum || ""}`) : undefined} stemUrl={(id) => apiUrl(`/api/attachments/${id}?play=1`)} />
     <p>Uploads are safe copies. For a complete Ableton project, use Collect All and Save, then upload a ZIP of the project folder. Attachments stay on this instance and are not shared with friends.</p>
     {(["project", "stem"] as const).map((kind) => {
       const title = kind === "project" ? "Project files" : "Stems";
@@ -883,6 +887,8 @@ export default function Home() {
   const [timedNoteDraft, setTimedNoteDraft] = useState("");
   const [editingTimedNoteUuid, setEditingTimedNoteUuid] = useState<string>();
   const [importNotice, setImportNotice] = useState("");
+  const [attachmentRevision, setAttachmentRevision] = useState(0);
+  const importSave = useRef<{ demo: Demo; resolve: () => void; reject: (e: unknown) => void } | null>(null);
   const [detectingId, setDetectingId] = useState<number>();
   const [showEdit, setShowEdit] = useState(false);
   const [editTagsDraft, setEditTagsDraft] = useState("");
@@ -1081,6 +1087,12 @@ export default function Home() {
 
   useEffect(() => {
     if (!ready) return;
+    const pending = importSave.current;
+    if (pending && demos.includes(pending.demo)) {
+      importSave.current = null;
+      saveWorkspace({ demos, projects, tags, orders, media, listens, timedNotes, shares, projectShares }).then(pending.resolve, pending.reject);
+      return;
+    }
     const timeout = window.setTimeout(() => {
       saveWorkspace({ demos, projects, tags, orders, media, listens, timedNotes, shares, projectShares }).catch(() => {
         setImportNotice("Changes could not be saved to SQLite. Check that the local server is running.");
@@ -1761,6 +1773,58 @@ export default function Home() {
       [nextProject]: (current[nextProject] ?? []).filter((id) => id !== selected.id),
     }));
     setShowEdit(false);
+  }
+
+  async function importSets(plans: SetPlan[], bulk: boolean, progress: (value: string) => void) {
+    if (!ready || !account) throw new Error("Wait for the library to load.");
+    const known = [...demos];
+    let completed = 0;
+    for (const plan of plans) {
+      const { set } = plan;
+      try {
+        progress(`Importing ${completed + 1}/${plans.length}: ${set.name}`);
+        const existing = known.find((d) => String(d.id) === plan.target && d.ownerId === account.id);
+        if (plan.target !== "new" && !existing) throw new Error("The selected demo is not owned by this account.");
+        let id = Date.now(); while (known.some((d) => d.id === id)) id++;
+        let demo: Demo = existing ?? { id, uuid: crypto.randomUUID(), ownerId: account.id, title: set.name, bpm: 0, key: "—", duration: "00:00", status: "unheard", tags: [], note: "", nextAction: "", favorite: false, project: view === "project" ? project : "Unsorted", updatedAt: Date.now(), creationDate: extractCreationDate(set.name) };
+        const master = set.masters[Number(plan.master)];
+        if (master) {
+          const checksum = await checksumBlob(master);
+          const duplicate = known.find((d) => d.id !== demo.id && d.checksum === checksum);
+          if (duplicate) throw new Error(`Master already belongs to “${duplicate.title}”. Choose that demo or skip the master.`);
+          if (checksum !== demo.checksum) {
+            const analysis = await analyzeAudio(master);
+            await putAudio(demo.id, master);
+            demo = { ...demo, audioName: master.name, checksum, duration: analysis.duration, bpm: analysis.bpm || demo.bpm, fileSize: master.size, copyVerifiedAt: Date.now(), updatedAt: Date.now() };
+          }
+        }
+        if (demo !== existing) {
+          await new Promise<void>((resolve, reject) => {
+            importSave.current = { demo, resolve, reject };
+            setDemos((current) => existing ? current.map((d) => d.id === demo.id ? demo : d) : [demo, ...current]);
+          });
+          const i = known.findIndex((d) => d.id === demo.id);
+          if (i < 0) known.push(demo); else known[i] = demo;
+        }
+        const endpoint = `/api/demos/${encodeURIComponent(demo.uuid)}/attachments`;
+        let attached = await apiRequest<Attachment[]>(endpoint);
+        async function attach(file: File, name: string, kind: string) {
+          progress(`${set.name}: ${name}`);
+          // On retry, skip only byte-identical copies, not different exports with the same name.
+          for (const item of attached.filter((a) => a.kind === kind && a.name === name && a.size === file.size)) {
+            const response = await fetch(apiUrl(`/api/attachments/${item.id}`));
+            if (!response.ok) throw new Error("Could not check existing attachment");
+            if (await checksumBlob(await response.blob()) === await checksumBlob(file)) return;
+          }
+          attached = await apiRequest<Attachment[]>(`${endpoint}?kind=${kind}`, { method: "POST", headers: { "content-type": "application/octet-stream", "x-file-name": encodeURIComponent(name) }, body: file });
+        }
+        for (const file of set.stems) await attach(file, file.webkitRelativePath.split("/").slice(bulk ? 3 : 2).join(" · "), "stem");
+        if (set.project.length) { const zip = await archiveProject(set, bulk); await attach(zip, zip.name, "project"); }
+        completed++;
+      } catch (e) { throw new Error(`${completed} sets completed. ${set.name}: ${e instanceof Error ? e.message : "Import failed"}. Copies already saved are kept. Close and select the folder again to re-match before retrying.`); }
+      finally { setAttachmentRevision((n) => n + 1); }
+    }
+    refreshStorageInfo().catch(() => undefined);
   }
 
   async function attachAudio(event: React.ChangeEvent<HTMLInputElement>) {
@@ -2872,6 +2936,7 @@ export default function Home() {
         <header className="topbar"><div className="breadcrumb"><span>Workspace</span><i>/</i><strong>{currentTitle}</strong></div><div className="top-actions"><label className="search"><span>⌕</span><input value={search} onChange={(event) => { setStatsFilters([]); setSearch(event.target.value); if (view === "stats" || view === "project") setView("search"); }} placeholder={view === "feedback" ? "Search feedback" : "Search demos"} /></label><button className="avatar" aria-label="Open account" onClick={() => setShowAccount(true)}>{account?.displayName.slice(0, 2).toUpperCase() || "—"}</button></div></header>
         <div className="page-content">
           <div className="heading-row"><div><div className="eyebrow">{todayLabel || "TODAY"}</div><h1>{currentTitle}</h1><p className="lede">{view === "search" ? "Combine text, tags, tempo, votes, and listens to find demos." : view === "feedback" ? <><strong>{feedbackItems.length}</strong> ratings and timed notes received from friends.</> : view === "sharing" ? <><strong>{directSharedDemoCount}</strong> demos shared directly with <strong>{sharedFriendCount}</strong> {sharedFriendCount === 1 ? "friend" : "friends"}.</> : view === "stats" ? <>{statsFilters.length ? "Filtered stats for" : "A catalogue overview of"} <strong>{statsFilteredDemos.length} demos</strong>, their lengths, tempos, and keys.</> : view === "revisit" ? `${revisitDemos.length} demos are queued, oldest first.` : view === "project" ? projectTab === "moodboard" ? "Collect visual, video, and audio references for this project." : "Move demos between the candidate pool and ordered tracklist." : <>Your library contains <strong>{demos.length} demos</strong>, with <strong>{revisitDemos.length}</strong> queued for review.</>}</p></div><div className="heading-actions">{view === "feedback" && <button className="primary-button" disabled={!friends.length || syncingFriendIds.length > 0} onClick={syncAllFriends}>{syncingFriendIds.length ? "Syncing…" : "Sync friends"}</button>}{view === "stats" && <><button className="secondary-button" onClick={() => { setDetectProgress(""); setShowBulkDetect(true); }}>⌁ Detect BPM</button><button className="secondary-button" onClick={() => { setKeyDetectProgress(""); setShowKeyDetect(true); }}>♬ Analyze keys</button><button className="primary-button stats-listen-button" disabled={!statsAuditionDemos.length} onClick={() => startRapidListen(statsAuditionDemos)}>{statsAuditionDemos.length ? `▶ Listen to ${statsFilters.length ? "filtered " : ""}${statsAuditionDemos.length}` : statsFilteredDemos.length ? "No local audio" : "No matching demos"}</button></>}{view === "revisit" && <button className="secondary-button" onClick={pickForMe}>Pick one for me</button>}{view === "project" && project !== "Unsorted" && <button className="settings-button" onClick={() => setShowProjectSettings(true)} aria-label={`Manage ${project}`}>⚙ Project settings</button>}{view === "project" && project !== "Unsorted" && projectTab === "moodboard" && <button className="secondary-button" onClick={() => setShowMedia(true)}>＋ Add reference</button>}{(view === "library" || view === "project" || view === "revisit") && <><button className="secondary-button" onClick={openSingleImport}>＋ One demo</button><button className="primary-button" onClick={openBulkImport}><span>＋</span> {pendingBulkImport?.conflicts.length ? `Resolve ${pendingBulkImport.conflicts.length} conflicts` : "Bulk import"}</button></>}</div></div>
+          {ready && (view === "library" || view === "project") && <SetImport demos={demos.filter((d) => d.ownerId === account?.id)} onImport={importSets} audioUrl={(id) => apiUrl(`/api/audio/${id}`)} />}
           {importNotice && <div className="import-notice" role="status"><span>✓</span><p>{importNotice}</p><button onClick={() => setImportNotice("")} aria-label="Dismiss import summary">×</button></div>}
 
           {view === "project" && project !== "Unsorted" && projectTab === "tracklist" && <ProjectTracklists key={project} lists={projectVersions} selected={selectedTracklist?.id ?? ""} onSelect={(id) => setSelectedTracklists((current) => ({ ...current, [project]: id }))} onChange={(tracklists) => setProjects((current) => current.map((item) => item.name === project ? { ...item, tracklists } : item))} ids={projectOrder} tracks={demos.filter((demo) => demo.project === project)} onStarted={(id) => { detailAudioRef.current?.pause(); markDemoListened(id); }} renderFeedback={(id, session) => { const demo = demos.find((item) => item.id === id); return demo ? <ProjectTrackFeedback key={`${session}:${demo.uuid}`} demo={demo} account={account} listens={listens} onVote={(vote) => setListens((current) => [vote, ...current.filter((item) => item.eventUuid !== vote.eventUuid)])} /> : null; }} audioUrl={(id) => apiUrl(`/api/audio/${id}`)} />}
@@ -3023,7 +3088,8 @@ export default function Home() {
               window.alert(error instanceof Error ? error.message : "Could not remove demo. Please retry.");
             }
           }}>Remove track from server</button></section>}
-          {selected && <DemoAttachments key={`attachments-${selected.uuid}`} demo={selected} />}
+          {selected && account?.id === selected.ownerId && <SetImport key={`set-${selected.uuid}`} demos={[selected]} single={selected} onImport={importSets} audioUrl={(id) => apiUrl(`/api/audio/${id}`)} />}
+          {selected && <DemoAttachments key={`attachments-${selected.uuid}`} demo={selected} revision={attachmentRevision} />}
           {selected && <TrackDiscussion key={selected.uuid} demo={selected} />}
           <div className="bottom-note"><span className="spark">✳</span><span><strong>{revisitDemos.length} demos in the review queue.</strong> Sorted by oldest update.</span><button onClick={() => { setStatsFilters([]); setView("revisit"); setProject("All demos"); }}>Open revisit queue →</button></div>
           </>}

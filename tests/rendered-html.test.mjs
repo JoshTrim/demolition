@@ -8,6 +8,39 @@ import { promisify } from "node:util";
 
 const run = promisify(execFile);
 
+async function importTestModule(name) {
+  const { transpileModule, ModuleKind, ScriptTarget } = await import("typescript");
+  const source = await readFile(new URL("../app/" + name + ".ts", import.meta.url), "utf8");
+  const js = transpileModule(source, { compilerOptions: { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 } }).outputText.replaceAll('from "fflate"', "from " + JSON.stringify(import.meta.resolve("fflate")));
+  return import("data:text/javascript;base64," + Buffer.from(js).toString("base64"));
+}
+test("single and parent set imports classify audio and preserve project paths in a real ZIP", async () => {
+  const { scanSets, archiveProject } = await importTestModule("set-files");
+  const { unzipSync } = await import("fflate");
+  function file(p) { const f = new File([p], p.split("/").at(-1)); Object.defineProperty(f, "webkitRelativePath", { value: p }); return f; }
+  const paths = ["A/Master/bounce.wav", "A/Master/other.mp3", "A/Master/no.txt", "A/STEMS/drums/kick.aiff", "A/Stems/no.asd", "A/Project/Samples/a.wav", "A/Project/session.als", "A/Project/.DS_Store", "A/Project/../escape", "A/Misc/no.wav"];
+  const [single] = scanSets(paths.map(file), false);
+  assert.equal(single.name, "A"); assert.equal(single.masters.length, 2); assert.equal(single.stems.length, 1); assert.equal(single.project.length, 2);
+  const bulk = scanSets([...paths, "B/Stems/bass.wav"].map((p) => file("Collection/" + p)), true);
+  assert.deepEqual(bulk.map((s) => s.name), ["A", "B"]);
+  for (const [set, parent] of [[single, false], [bulk[0], true]]) {
+    const bytes = new Uint8Array(await (await archiveProject(set, parent)).arrayBuffer());
+    const unpacked = unzipSync(bytes);
+    assert.deepEqual(Object.keys(unpacked).sort(), ["Project/Samples/a.wav", "Project/session.als"]);
+    assert.equal(new TextDecoder().decode(unpacked["Project/session.als"]), (parent ? "Collection/" : "") + "A/Project/session.als");
+    assert.deepEqual(new Uint8Array(await (await archiveProject(set, parent)).arrayBuffer()), bytes);
+  }
+});
+test("stem sources share a start clock and seek offset; mute overrides multi-solo", async () => {
+  const { startStem, stemLevel } = await importTestModule("stem-playback");
+  const starts = [], levels = [];
+  const context = { createBufferSource: () => ({ connect() {}, start(...args) { starts.push(args); } }), createGain: () => ({ connect() {}, gain: { setValueAtTime(value) { levels.push(value); } } }) };
+  for (const id of ["drums", "bass", "fx"]) startStem(context, { duration: 5 }, 17.05, 2, stemLevel(id, ["drums", "bass"], ["bass"]));
+  assert.deepEqual(starts, [[17.05, 2], [17.05, 2], [17.05, 2]]); assert.deepEqual(levels, [1, 0, 0]);
+  assert.equal(startStem(context, { duration: 1 }, 17.05, 2, 1), undefined);
+  assert.equal(stemLevel("fx", [], []), 1);
+});
+
 test("project candidate builder paginates a large library and renders tracklist controls", async () => {
   const { transpileModule, ModuleKind, JsxEmit } = await import("typescript");
   const { createElement } = await import("react");
@@ -219,7 +252,7 @@ test("ships a standalone image-based Compose deployment", async () => {
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../Dockerfile", import.meta.url), "utf8"),
   ]);
-  assert.match(compose, /image: \$\{DEMOLITION_IMAGE:-ghcr\.io\/joshtrim\/demolition:0\.1\.13\}/);
+  assert.match(compose, /image: \$\{DEMOLITION_IMAGE:-ghcr\.io\/joshtrim\/demolition:0\.1\.14\}/);
   assert.match(compose, /DEMOLITION_DATABASE_DIR/);
   assert.match(compose, /DEMOLITION_DATABASE_PATH: \/app\/database\/demolition\.sqlite/);
   assert.match(compose, /DEMOLITION_PROXY_TOKEN/);

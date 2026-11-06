@@ -1,6 +1,6 @@
 {
   "name": "demolition",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@types/qrcode": "^1.5.6",
+    "fflate": "0.7.4",
     "qrcode": "^1.5.4",
     "react": "19.2.6",
     "react-dom": "19.2.6"

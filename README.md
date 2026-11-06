@@ -10,6 +10,8 @@ Demolition does not require external hosting or cloud storage.
 - Imported audio copies are stored in `data/audio/`.
 - Imported moodboard files are stored in `data/media/`.
 - Per-demo stems and project files are stored as managed copies in `data/attachments/`, with their metadata in SQLite. Select a demo and use **Stems & project files** to upload multiple files or download them later. ZIP complete project folders (including samples); uploading an Ableton `.als` alone does not include its referenced audio. Attachments are private to this instance and are not part of friend sync or the JSON metadata export. Back up the database and the whole data directory together.
+- **Attach set folder** imports one set into the selected demo. **Import parent folder of sets** imports direct child set folders from the library or project view. Use `Set Name/Master/`, `Set Name/Stems/` and `Set Name/Project/`. Each section is optional. Demolition scans its subfolders, ignores non-audio files in Master/Stems, and packages Project files with their relative paths. Use Ableton’s Collect All and Save first to include external samples. For projects approaching 4 GiB, upload a manually created ZIP64 archive instead.
+- Review each set before importing: select a target demo, create one, or skip it. An existing master is kept unless you choose another. In **Demo playback**, Master is the default. Switch to **Stems** to audition individual exports together with solo and mute. Export stems from the same start point; they play on one clock, not beat-aligned or time-stretched. The browser decodes the stems into memory on demand, so long multitrack sets can be memory intensive. ZIP attachments are downloadable, not directly playable.
 - The entire `data/` directory is excluded from Git.
 - Imported source files are read-only inputs. Demolition works with its own copies.
 
@@ -121,7 +123,7 @@ openssl rand -hex 32
 Copy the generated token into `.env`, then set each value for your server:
 
 ```dotenv
-DEMOLITION_IMAGE=ghcr.io/joshtrim/demolition:0.1.13
+DEMOLITION_IMAGE=ghcr.io/joshtrim/demolition:0.1.14
 DEMOLITION_BIND_ADDRESS=127.0.0.1
 DEMOLITION_ALLOW_LAN=false
 DEMOLITION_UI_PORT=5030
