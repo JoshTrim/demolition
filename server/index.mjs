@@ -1,12 +1,12 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createReadStream, createWriteStream, existsSync } from "node:fs";
-import { mkdir, readFile, rename, stat, statfs, unlink, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rename, stat, statfs, unlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import {
-  listAttachments, saveAttachment, getAttachment, removeDemo,
+  listAttachments, saveAttachment, getAttachment, removeDemo, listFileVersions, saveFileVersion, updateFileVersion, saveMasterFileVersion,
   acceptPairing, audioDirectory, authenticatePeer, buildSyncPackage, canFriendAccessAudio, closeRemoteSession,
   createPairingInvite, createRemoteSession, databasePath, dataDirectory, decodePairingInvite, demoByUuid, friendWithSecrets,
   getAccount, getRemoteSession, getStoredFile, markFeedbackSeen, markFriendSyncError, markPeerAudioStored, mediaDirectory,
@@ -92,6 +92,18 @@ function safeFileName(value) {
   catch { return "file"; }
 }
 
+async function captureMaster(uuid, audio, label, notes = "") {
+  const id = randomUUID(), attachmentId = randomUUID(), directory = path.join(dataDirectory, "attachments");
+  await mkdir(directory, { recursive: true });
+  const destination = path.join(directory, attachmentId);
+  try {
+    await copyFile(path.join(audioDirectory, audio.storage_name), destination, 1);
+    const size = (await stat(destination)).size;
+    saveMasterFileVersion(id, uuid, label, notes, attachmentId, audio.original_name, size);
+  } catch (error) { await unlink(destination).catch(() => undefined); throw error; }
+  return id;
+}
+
 async function uploadFile(req, res, type, id) {
   const directory = type === "audio" ? audioDirectory : mediaDirectory;
   await mkdir(directory, { recursive: true });
@@ -107,10 +119,16 @@ async function uploadFile(req, res, type, id) {
     throw error;
   }
   const previous = getStoredFile(type, id);
+  const demo = type === "audio" ? readWorkspace().demos.find((d) => d.id === id) : undefined;
+  if (previous && demo) {
+    try { await captureMaster(demo.uuid, previous, "Before replacement · " + new Date().toISOString()); }
+    catch (error) { await unlink(temporary).catch(() => undefined); throw error; }
+  }
   if (previous && previous.storage_name !== storageName) await unlink(path.join(directory, previous.storage_name)).catch(() => undefined);
   await rename(temporary, destination);
   const details = await stat(destination);
   saveStoredFile(type, id, storageName, originalName, req.headers["content-type"] || "application/octet-stream", details.size);
+  if (demo) await captureMaster(demo.uuid, getStoredFile(type, id), "Master upload · " + new Date().toISOString());
   sendJson(req, res, 201, { ok: true, size: details.size });
 }
 
@@ -435,12 +453,34 @@ const server = createServer(async (req, res) => {
       removeDemo(uuid);
       return sendJson(req, res, 200, { ok: true });
     }
+    const versionsRoute = url.pathname.match(/^\/api\/demos\/([^/]+)\/file-versions$/);
+    if (versionsRoute && ["GET", "POST", "PATCH"].includes(req.method)) {
+      const uuid = decodeURIComponent(versionsRoute[1]), demo = demoByUuid(uuid);
+      if (!demo) return sendJson(req, res, 404, { error: "Demo not found" });
+      if (req.method === "GET") return sendJson(req, res, 200, listFileVersions(uuid));
+      const body = await readJson(req);
+      if (typeof body.label !== "string" || !body.label.trim() || body.label.length > 100 || typeof body.notes !== "string" || body.notes.length > 5000) return sendJson(req, res, 400, { error: "Provide a label and notes (up to 100 and 5000 characters)." });
+      if (req.method === "PATCH") {
+        if (!listFileVersions(uuid).some((v) => v.id === body.id)) return sendJson(req, res, 404, { error: "Version not found" });
+        updateFileVersion(body.id, body.label.trim(), body.notes);
+        return sendJson(req, res, 200, listFileVersions(uuid));
+      }
+      let id = randomUUID();
+      const audio = getStoredFile("audio", demo.id);
+      // A version captures the master bytes as well as the label and date.
+      if (audio) {
+        id = await captureMaster(uuid, audio, body.label.trim(), body.notes);
+      } else saveFileVersion(id, uuid, body.label.trim(), body.notes);
+      return sendJson(req, res, 201, { id });
+    }
     const attachmentList = url.pathname.match(/^\/api\/demos\/([^/]+)\/attachments$/);
     if (attachmentList && ["GET", "POST"].includes(req.method)) {
       const demoUuid = decodeURIComponent(attachmentList[1]);
       if (!demoByUuid(demoUuid)) return sendJson(req, res, 404, { error: "Demo not found" });
       if (req.method === "GET") return sendJson(req, res, 200, listAttachments(demoUuid));
       const kind = url.searchParams.get("kind");
+      const versionId = url.searchParams.get("version");
+      if (versionId && !listFileVersions(demoUuid).some((v) => v.id === versionId)) return sendJson(req, res, 400, { error: "Version does not belong to this demo" });
       if (!["stem", "project"].includes(kind)) return sendJson(req, res, 400, { error: "Choose stems or project files" });
       const directory = path.join(dataDirectory, "attachments");
       await mkdir(directory, { recursive: true });
@@ -448,7 +488,7 @@ const server = createServer(async (req, res) => {
       const destination = path.join(directory, id);
       try {
         await pipeline(req, createWriteStream(destination, { flags: "wx" }));
-        saveAttachment(id, demoUuid, safeFileName(req.headers["x-file-name"]), kind, (await stat(destination)).size);
+        saveAttachment(id, demoUuid, safeFileName(req.headers["x-file-name"]), kind, (await stat(destination)).size, versionId);
       } catch (error) {
         await unlink(destination).catch(() => undefined);
         throw error;
@@ -461,10 +501,28 @@ const server = createServer(async (req, res) => {
       if (!record || !demoByUuid(record.demo_uuid)) return sendJson(req, res, 404, { error: "Attachment not found" });
       const file = path.join(dataDirectory, "attachments", record.id);
       await stat(file);
-      if (url.searchParams.get("play") === "1" && record.kind === "stem" && /\.aiff?$/i.test(record.name)) {
+      if (url.searchParams.get("play") === "1" && ["stem", "master"].includes(record.kind) && /\.aiff?$/i.test(record.name)) {
         const wav = aiffToWav(await readFile(file));
         res.writeHead(200, { ...corsHeaders(req), "Content-Type": "audio/wav", "Content-Length": wav.length, "X-Content-Type-Options": "nosniff" });
         return res.end(wav);
+      }
+      if (url.searchParams.get("play") === "1") {
+        const types = { ".wav": "audio/wav", ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".aac": "audio/aac", ".ogg": "audio/ogg", ".opus": "audio/ogg", ".flac": "audio/flac" };
+        const type = types[path.extname(record.name).toLowerCase()];
+        if (!type || !["stem", "master"].includes(record.kind)) return sendJson(req, res, 400, { error: "Not playable audio" });
+        const size = (await stat(file)).size;
+        const range = req.headers.range;
+        let start = 0, end = size - 1;
+        if (range) {
+          const match = /^bytes=(\d*)-(\d*)$/.exec(range);
+          if (!match || (!match[1] && !match[2])) { res.writeHead(416, { "Content-Range": `bytes */${size}` }); return res.end(); }
+          start = match[1] ? Number(match[1]) : Math.max(0, size - Number(match[2]));
+          end = match[1] && match[2] ? Math.min(Number(match[2]), size - 1) : size - 1;
+          if (start > end || start >= size) { res.writeHead(416, { "Content-Range": `bytes */${size}` }); return res.end(); }
+        }
+        res.writeHead(range ? 206 : 200, { ...corsHeaders(req), "Content-Type": type, "Accept-Ranges": "bytes", "Content-Length": Math.max(0, end - start + 1), ...(range ? { "Content-Range": `bytes ${start}-${end}/${size}` } : {}) });
+        if (!size) return res.end();
+        await pipeline(createReadStream(file, { start, end }), res); return;
       }
       res.writeHead(200, { ...corsHeaders(req), "Content-Type": "application/octet-stream", "X-Content-Type-Options": "nosniff", "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(record.name).replace(/'/g, "%27")}`, "Content-Length": record.size });
       await pipeline(createReadStream(file), res);

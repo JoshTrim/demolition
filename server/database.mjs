@@ -17,11 +17,30 @@ database.exec(`CREATE TABLE IF NOT EXISTS demo_attachments (
   id TEXT PRIMARY KEY, demo_uuid TEXT NOT NULL, name TEXT NOT NULL,
   kind TEXT NOT NULL, size INTEGER NOT NULL, created_at INTEGER NOT NULL
 )`);
+database.exec(`CREATE TABLE IF NOT EXISTS demo_file_versions (id TEXT PRIMARY KEY, demo_uuid TEXT NOT NULL, label TEXT NOT NULL, notes TEXT NOT NULL, created_at INTEGER NOT NULL)`);
+if (!database.prepare("PRAGMA table_info(demo_attachments)").all().some((c) => c.name === "version_id")) database.exec("ALTER TABLE demo_attachments ADD COLUMN version_id TEXT");
+export function listFileVersions(uuid) {
+  return database.prepare("SELECT * FROM demo_file_versions WHERE demo_uuid = ? ORDER BY created_at DESC, id").all(uuid);
+}
+export function saveFileVersion(id, uuid, label, notes = "") {
+  database.prepare("INSERT INTO demo_file_versions VALUES (?, ?, ?, ?, ?)").run(id, uuid, String(label).slice(0, 100), String(notes).slice(0, 5000), Date.now());
+}
+export function updateFileVersion(id, label, notes) {
+  database.prepare("UPDATE demo_file_versions SET label = ?, notes = ? WHERE id = ?").run(String(label).slice(0, 100), String(notes).slice(0, 5000), id);
+}
+export function saveMasterFileVersion(id, uuid, label, notes, attachmentId, name, size) {
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    saveFileVersion(id, uuid, label, notes);
+    saveAttachment(attachmentId, uuid, name, "master", size, id);
+    database.exec("COMMIT");
+  } catch (error) { database.exec("ROLLBACK"); throw error; }
+}
 export function listAttachments(demoUuid) {
   return database.prepare("SELECT * FROM demo_attachments WHERE demo_uuid = ? ORDER BY created_at, id").all(demoUuid);
 }
-export function saveAttachment(id, demoUuid, name, kind, size) {
-  database.prepare("INSERT INTO demo_attachments VALUES (?, ?, ?, ?, ?, ?)").run(id, demoUuid, name, kind, size, Date.now());
+export function saveAttachment(id, demoUuid, name, kind, size, versionId = null) {
+  database.prepare("INSERT INTO demo_attachments (id, demo_uuid, name, kind, size, created_at, version_id) VALUES (?, ?, ?, ?, ?, ?, ?)").run(id, demoUuid, name, kind, size, Date.now(), versionId);
 }
 export function getAttachment(id) {
   return database.prepare("SELECT * FROM demo_attachments WHERE id = ?").get(id);
@@ -37,6 +56,7 @@ export function removeDemo(uuid) {
     database.prepare("DELETE FROM demo_shares WHERE demo_uuid = ?").run(uuid);
     database.prepare("DELETE FROM track_comments WHERE demo_uuid = ?").run(uuid);
     database.prepare("DELETE FROM demo_attachments WHERE demo_uuid = ?").run(uuid);
+    database.prepare("DELETE FROM demo_file_versions WHERE demo_uuid = ?").run(uuid);
     removeStoredFile("audio", demo.id);
     database.prepare("DELETE FROM demos WHERE uuid = ?").run(uuid);
     database.exec("COMMIT");
@@ -308,6 +328,17 @@ database.exec(`
   PRAGMA optimize;
 `);
 
+if (!database.prepare("PRAGMA table_info(project_media)").all().some((column) => column.name === "canvas")) {
+  database.exec("ALTER TABLE project_media ADD COLUMN canvas TEXT");
+}
+
+function normalizeCanvas(value) {
+  if (!value || typeof value !== "object") return undefined;
+  const bounded = (n, fallback, min, max) => Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : fallback;
+  return { x: bounded(value.x, 40, 0, 100000), y: bounded(value.y, 40, 0, 100000),
+    width: bounded(value.width, 300, 180, 600), z: bounded(value.z, 0, 0, 1000000), text: value.text === true };
+}
+
 function createOwner() {
   const existing = database.prepare("SELECT * FROM owner_identity LIMIT 1").get();
   if (existing) return existing;
@@ -539,6 +570,7 @@ export function readWorkspace() {
     id: Number(row.id), project: row.project, kind: row.kind, source: row.source,
     title: row.title, note: row.note, fileName: row.file_name ?? undefined,
     url: row.url ?? undefined, createdAt: Number(row.created_at),
+    canvas: row.canvas ? normalizeCanvas(JSON.parse(row.canvas)) : undefined,
   }));
   const listens = listListens.all().map(mapListen);
   const timedNotes = listTimedNotes.all().map(mapTimedNote);
@@ -562,7 +594,7 @@ const insertDemo = database.prepare(`
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 const insertTrack = database.prepare("INSERT INTO tracklist (project, demo_id, position) VALUES (?, ?, ?)");
-const insertMedia = database.prepare("INSERT INTO project_media (id, project, kind, source, title, note, file_name, url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+const insertMedia = database.prepare("INSERT INTO project_media (id, project, kind, source, title, note, file_name, url, created_at, canvas) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
 const insertListen = database.prepare(`
   INSERT INTO listens (id, event_uuid, demo_id, demo_uuid, author_id, author_name, author_public_key, verdict, note, listened_at, signature, received_at)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -657,7 +689,7 @@ export function writeWorkspace(payload) {
       demo.audioName ?? null, demo.checksum ?? null, demo.fileSize ?? null, demo.copyVerifiedAt ?? null, demo.creationDate ?? null,
       demo.trimStartSeconds ?? null, demo.trimEndSeconds ?? null, Number(demo.listenCount) || 0,
     ));
-    media.forEach((item) => insertMedia.run(item.id, item.project, item.kind, item.source, item.title, item.note ?? "", item.fileName ?? null, item.url ?? null, item.createdAt || Date.now()));
+    media.forEach((item) => insertMedia.run(item.id, item.project, item.kind, item.source, item.title, item.note ?? "", item.fileName ?? null, item.url ?? null, item.createdAt || Date.now(), JSON.stringify(normalizeCanvas(item.canvas)) ?? null));
     listens.forEach((input) => {
       if (!demoIds.has(Number(input.demoId)) || (input.verdict !== "up" && input.verdict !== "down")) return;
       const listen = localizeListen(input, demoById);

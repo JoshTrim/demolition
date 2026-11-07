@@ -7,8 +7,8 @@ type Stats = { up: number; down: number; count: number; score: number };
 const pageSize = 20;
 const seconds = (value: string) => value.split(":").reduce((sum, part) => sum * 60 + (Number(part) || 0), 0);
 
-export default function ProjectBuilder({ tracks, order, onOrder, onFavorite, onOpen, statsFor, audioUrl, onAudition }: {
-  tracks: Track[]; order: number[]; onOrder: (ids: number[]) => void;
+export default function ProjectBuilder({ listName = "Tracklist", tracks, order, onOrder, onFavorite, onOpen, statsFor, audioUrl, onAudition }: {
+  listName?: string; tracks: Track[]; order: number[]; onOrder: (ids: number[]) => void;
   onFavorite: (id: number) => void; onOpen: (id: number) => void;
   statsFor: (id: number) => Stats; audioUrl: (id: number) => string; onAudition: (id: number) => void;
 }) {
@@ -21,7 +21,7 @@ export default function ProjectBuilder({ tracks, order, onOrder, onFavorite, onO
   const [sort, setSort] = useState("rate");
   const [page, setPage] = useState(0);
   const [selection, setSelection] = useState<number[]>([]);
-  const [tab, setTab] = useState("candidates");
+  const [tab, setTab] = useState("tracklist");
   const [preview, setPreview] = useState<number>();
   const [playing, setPlaying] = useState(false);
   const [error, setError] = useState("");
@@ -47,7 +47,7 @@ export default function ProjectBuilder({ tracks, order, onOrder, onFavorite, onO
   return <section className="project-builder" data-mobile-panel={tab} aria-label="Tracklist builder">
     <div className="builder-tabs"><button aria-pressed={tab === "candidates"} onClick={() => setTab("candidates")}>Candidates ({candidates.length})</button><button aria-pressed={tab === "tracklist"} onClick={() => setTab("tracklist")}>Tracklist ({ordered.length})</button></div>
     <section className="builder-candidates" aria-label="Browse candidates">
-      <header><h2>Candidates</h2><span role="status">{filtered.length} matching / {candidates.length} available</span></header>
+      <header><h2>Available candidates</h2><span role="status">{filtered.length} matching / {candidates.length} available</span></header>
       <div className="builder-filters">
         <label className="builder-search">Search title or tags<input type="search" value={query} onChange={(event) => { setQuery(event.target.value); setPage(0); }} /></label>
         <label>Tag<select value={tag} onChange={(event) => { setTag(event.target.value); setPage(0); }}><option value="">All tags</option>{[...new Set(tracks.flatMap((track) => track.tags))].sort().map((name) => <option key={name}>{name}</option>)}</select></label>
@@ -66,9 +66,9 @@ export default function ProjectBuilder({ tracks, order, onOrder, onFavorite, onO
         <div className="builder-track-copy"><button className="text-button" onClick={() => onOpen(track.id)}>{track.title}</button><small>{track.bpm ? `${track.bpm} BPM` : "BPM unknown"} · {track.duration} · {track.tags.join(" · ") || "No tags"}</small><span>↑ {stats.up} · ↓ {stats.down} · {rate(track) < 0 ? "Unrated" : `${Math.round(rate(track) * 100)}% up`} · {listens(track)} listens · Score {stats.score}</span></div>
         <div className="builder-row-actions"><button className={`favorite-button ${track.favorite ? "active" : ""}`} aria-pressed={Boolean(track.favorite)} aria-label={`${track.favorite ? "Unfavourite" : "Favourite"} ${track.title}`} onClick={() => onFavorite(track.id)}>{track.favorite ? "★" : "☆"}</button><button className="secondary-button" disabled={!track.audioName} onClick={() => { audio.current?.pause(); counted.current = undefined; setError(""); if (preview === track.id) audio.current?.play().catch(() => setError("Could not play this audio.")); else setPreview(track.id); }}>Audition</button><button className="primary-button" aria-label={`Add ${track.title} to tracklist`} onClick={() => add([track.id])}>Add</button></div>
       </article>; })}</div>
-      {!filtered.length && <p className="empty-state">{candidates.length ? "No candidates match these filters." : "All project tracks are in this tracklist. Import more demos or remove a track from the list."}</p>}
+      {!filtered.length && <p className="empty-state">{candidates.length ? "No candidates match these filters." : "No unused project candidates. Assign more demos to this project from their details, or remove a track from this list."}</p>}
       <footer className="builder-pagination"><button className="secondary-button" disabled={!currentPage} onClick={() => setPage(currentPage - 1)}>Previous page</button><span>Page {currentPage + 1} of {pages}</span><button className="secondary-button" disabled={currentPage + 1 >= pages} onClick={() => setPage(currentPage + 1)}>Next page</button></footer>
     </section>
-    <aside className="builder-order" aria-label="Ordered tracklist"><header><h2>Tracklist</h2><span>{ordered.length} tracks · {Math.floor(total / 60)}m {Math.round(total % 60)}s</span></header><p>Use the arrows to reorder. Removing a track returns it to candidates.</p><ol>{ordered.map((track, index) => <li key={track.id}><button className="text-button" onClick={() => onOpen(track.id)}>{index + 1}. {track.title}</button><small>{track.duration}</small><div><button className="secondary-button" disabled={!index} aria-label={`Move ${track.title} up`} onClick={() => move(index, -1)}>↑</button><button className="secondary-button" disabled={index === ordered.length - 1} aria-label={`Move ${track.title} down`} onClick={() => move(index, 1)}>↓</button><button className="secondary-button" aria-label={`Remove ${track.title} from tracklist`} onClick={() => onOrder(order.filter((id) => id !== track.id))}>Remove</button></div></li>)}</ol>{!ordered.length && <p>Add candidates to begin this tracklist.</p>}</aside>
+    <aside className="builder-order" aria-label="Ordered tracklist"><header><h2>{listName}</h2><span>{ordered.length} tracks · {Math.floor(total / 60)}m {Math.round(total % 60)}s</span></header><p>Use the arrows to reorder. Removing a track returns it to candidates.</p><ol>{ordered.map((track, index) => <li key={track.id}><button className="text-button" onClick={() => onOpen(track.id)}>{index + 1}. {track.title}</button><small>{track.duration}</small><div><button className="secondary-button" disabled={!index} aria-label={`Move ${track.title} up`} onClick={() => move(index, -1)}>↑</button><button className="secondary-button" disabled={index === ordered.length - 1} aria-label={`Move ${track.title} down`} onClick={() => move(index, 1)}>↓</button><button className="secondary-button" aria-label={`Remove ${track.title} from tracklist`} onClick={() => onOrder(order.filter((id) => id !== track.id))}>Remove</button></div></li>)}</ol>{!ordered.length && <p>Add candidates to begin this tracklist.</p>}</aside>
   </section>;
 }

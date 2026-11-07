@@ -42,3 +42,4 @@ yarn-error.log*
 
 # local application data (SQLite database and managed media copies)
 /data/
+*.tsbuildinfo

@@ -33,12 +33,14 @@ test("single and parent set imports classify audio and preserve project paths in
 });
 test("stem sources share a start clock and seek offset; mute overrides multi-solo", async () => {
   const { startStem, stemLevel } = await importTestModule("stem-playback");
-  const starts = [], levels = [];
-  const context = { createBufferSource: () => ({ connect() {}, start(...args) { starts.push(args); } }), createGain: () => ({ connect() {}, gain: { setValueAtTime(value) { levels.push(value); } } }) };
+  const starts = [], levels = [], pans = [];
+  const context = { createStereoPanner: () => ({ connect() {}, pan: { setValueAtTime(value) { pans.push(value); } } }), createBufferSource: () => ({ connect() {}, start(...args) { starts.push(args); } }), createGain: () => ({ connect() {}, gain: { setValueAtTime(value) { levels.push(value); } } }) };
   for (const id of ["drums", "bass", "fx"]) startStem(context, { duration: 5 }, 17.05, 2, stemLevel(id, ["drums", "bass"], ["bass"]));
   assert.deepEqual(starts, [[17.05, 2], [17.05, 2], [17.05, 2]]); assert.deepEqual(levels, [1, 0, 0]);
   assert.equal(startStem(context, { duration: 1 }, 17.05, 2, 1), undefined);
   assert.equal(stemLevel("fx", [], []), 1);
+  startStem(context, {duration:5}, 18, 0, 0.4, -0.75);
+  assert.equal(levels.at(-1), 0.4); assert.equal(pans.at(-1), -0.75);
 });
 
 test("project candidate builder paginates a large library and renders tracklist controls", async () => {
@@ -62,6 +64,30 @@ test("project candidate builder paginates a large library and renders tracklist 
   assert.match(html, /Select page/);
 });
 
+test("tracklist manager shows independent alternatives with counts and runtimes", async () => {
+  const { transpileModule, ModuleKind, JsxEmit } = await import("typescript");
+  const { createElement } = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const source = await readFile(new URL("../app/project-tracklists.tsx", import.meta.url), "utf8");
+  const output = transpileModule(source, { compilerOptions: { module: ModuleKind.ESNext, jsx: JsxEmit.ReactJSX } }).outputText
+    .replaceAll('from "react"', "from " + JSON.stringify(import.meta.resolve("react")))
+    .replaceAll('from "react/jsx-runtime"', "from " + JSON.stringify(import.meta.resolve("react/jsx-runtime")));
+  const { default: Tracklists } = await import("data:text/javascript;base64," + Buffer.from(output).toString("base64"));
+  const html = renderToStaticMarkup(createElement(Tracklists, {
+    lists: [{ id: "ep", name: "EP version", ids: [2] }], mainIds: [1, 2], selected: "ep", ids: [2],
+    tracks: [{ id: 1, title: "One", duration: "02:30", audioName: "one.wav" }, { id: 2, title: "Two", duration: "03:00" }],
+    onSelect() {}, onChange() {}, onStarted() {}, renderPlayer() {}, renderFeedback() {},
+  }));
+  assert.match(html, /2 tracks · 5m 30s/);
+  assert.match(html, /1 track · 3m 0s/);
+  assert.match(html, /EP version/);
+  assert.match(html, /Editing this list/);
+  assert.match(html, /1 without audio/);
+  assert.match(html, /disabled=""[^>]*>▶ Audition list/);
+  assert.match(html, /Duplicate/);
+  assert.match(html, /Delete list/);
+});
+
 async function render() {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
   workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
@@ -81,14 +107,14 @@ test("server-renders the Demolition workspace", async () => {
   assert.match(html, /<title>Demolition<\/title>/i);
   assert.match(html, /Demo library/);
   assert.match(html, /Local SQLite library/);
-  assert.match(html, /Bulk import/);
-  assert.match(html, /Manage tags/);
-  assert.match(html, /Listen mode/);
-  assert.match(html, /Library navigation/);
-  assert.match(html, /Friends navigation/);
-  assert.match(html, /Library tools/);
+  assert.match(html, /Import demos/);
+  assert.match(html, /Library management/);
+  assert.match(html, /Listen &amp; rate/);
+  assert.match(html, /Music navigation/);
+  assert.match(html, /Collaboration navigation/);
+  assert.match(html, /Management navigation/);
   assert.match(html, /Friends &amp; sync/);
-  assert.match(html, /Friend feedback/);
+  assert.match(html, /Feedback/);
   assert.match(html, /Upvote rate · highest/);
   assert.match(html, /Unlistened first · fewest listens/);
   assert.match(html, /Most listened/);
@@ -108,17 +134,26 @@ test("uses the local SQLite and managed-file backend", async () => {
     database.writeWorkspace({
       projects: [{ name: "Album", color: "blue", mood: "", tracklists: [{ id: "alternate", name: "Alternate order", ids: [1] }, { id: "empty", name: "Empty order", ids: [] }] }],
       demos: [{ id: 1, uuid: "demo-one", ownerId: account.id, title: "Test 12.4.19", bpm: 120, key: "C", duration: "01:00", status: "unheard", tags: ["test"], note: "", nextAction: "", rating: 0, favorite: true, project: "Album", updatedAt: 1, creationDate: "2019-04-12", trimStartSeconds: 4.5, trimEndSeconds: 52.25, listenCount: 7 }],
-      orders: { Album: [1] }, media: [],
+      orders: { Album: [1] }, media: [{id:8,project:"Album",kind:"link",source:"url",title:"Text",note:"Album direction",createdAt:1,canvas:{x:150,y:80,width:320,z:2,text:true}}],
       shares: [], listens: [{ id: 2, eventUuid: "listen-one", demoId: 1, demoUuid: "demo-one", authorId: account.id, authorName: account.displayName, verdict: "up", note: "Strong chorus", listenedAt: 2 }],
       timedNotes: [{ id: 3, noteUuid: "note-one", demoId: 1, demoUuid: "demo-one", authorId: account.id, authorName: account.displayName, startSeconds: 10, endSeconds: 18.5, note: "Bass change", createdAt: 3 }]
     });
     database.markFeedbackSeen(1234);
     const state = database.readWorkspace();
+    if (state.media[0].canvas.x !== 150 || state.media[0].note !== "Album direction") process.exit(1);
     database.saveAttachment("attachment-test", "demo-one", "Project.zip", "project", 2048);
     database.saveAttachment("stem-test", "demo-one", "Drums.wav", "stem", 1024);
     database.writeWorkspace(state);
+    if (!database.readWorkspace().media[0].canvas.text || database.readWorkspace().media[0].canvas.width !== 320) process.exit(1);
     if (database.readWorkspace().projects[0].tracklists[0].ids[0] !== 1 || database.readWorkspace().projects[0].tracklists.length !== 2) process.exit(1);
     if (database.listAttachments("demo-one").length !== 2 || database.getAttachment("attachment-test").name !== "Project.zip" || database.getAttachment("stem-test").kind !== "stem" || database.storedFileBytes() < 3072) process.exit(1);
+    database.saveMasterFileVersion("v1", "demo-one", "Mix 1", "Original intro", "master-v1", "Bounce.wav", 10);
+    database.saveMasterFileVersion("v2", "demo-one", "Mix 2", "Shorter intro", "master-v2", "Bounce.wav", 20);
+    database.saveAttachment("project-v1", "demo-one", "Project.zip", "project", 30, "v1");
+    database.updateFileVersion("v1", "Mix 1 archived", "Keep original arrangement");
+    database.writeWorkspace(state);
+    if (database.listFileVersions("demo-one").length !== 2 || database.getAttachment("master-v1").size !== 10 || database.getAttachment("master-v2").size !== 20 || database.getAttachment("project-v1").version_id !== "v1" || database.getAttachment("stem-test").version_id !== null) process.exit(1);
+    if (!database.listFileVersions("demo-one").some((v) => v.label === "Mix 1 archived" && v.notes === "Keep original arrangement")) process.exit(1);
     if (state.projects[0].name !== "Album" || state.tags[0].name !== "test" || state.demos[0].creationDate !== "2019-04-12" || state.demos[0].uuid !== "demo-one" || state.demos[0].favorite !== true || state.demos[0].trimStartSeconds !== 4.5 || state.demos[0].trimEndSeconds !== 52.25 || state.demos[0].listenCount !== 7 || state.orders.Album[0] !== 1 || state.listens[0].verdict !== "up" || state.listens[0].note !== "Strong chorus" || state.listens[0].authorId !== account.id || !state.listens[0].receivedAt || !state.listens[0].signature || state.timedNotes[0].endSeconds !== 18.5 || !state.timedNotes[0].receivedAt || !state.timedNotes[0].signature || state.account.feedbackSeenAt !== 1234) process.exit(1);
     const remote = database.createRemoteSession();
     database.updateRemoteSessionState(remote.token, { active: true, title: "Test", currentTime: 12 }, 0);
@@ -135,6 +170,7 @@ test("uses the local SQLite and managed-file backend", async () => {
     database.closeRemoteSession(remote.token);
     try { database.getRemoteSession(remote.token); process.exit(1); } catch {}
     database.removeDemo("demo-one");
+    if (database.listFileVersions("demo-one").length) process.exit(1);
     const removed = database.readWorkspace();
     if (removed.projects[0].tracklists[0].ids.length) process.exit(1);
     if (removed.demos.length || removed.listens.length || removed.timedNotes.length || database.listAttachments("demo-one").length || database.getStoredFile("audio", 1)) process.exit(1);

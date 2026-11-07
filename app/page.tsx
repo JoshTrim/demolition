@@ -6,8 +6,9 @@ import QRCode from "qrcode";
 import DemoSearch from "./demo-search";
 import ProjectTracklists, { type TracklistVersion } from "./project-tracklists";
 import ProjectBuilder from "./project-builder";
+import MoodboardCanvas, { type CanvasPosition } from "./moodboard-canvas";
 import SetImport, { type SetPlan } from "./set-import";
-import DemoMixer from "./demo-mixer";
+import DemoFiles from "./demo-files";
 import { archiveProject } from "./set-files";
 
 type Status = "unheard" | "revisit" | "shaping" | "finished";
@@ -55,6 +56,7 @@ type Friend = { id: string; displayName: string; instanceId: string; peerUrl: st
 type DemoShare = { demoUuid: string; friendId: string; shareAudio: boolean };
 type ProjectShare = { project: string; friendId: string; shareAudio: boolean };
 type ProjectMedia = {
+  canvas?: CanvasPosition;
   id: number;
   project: string;
   kind: "image" | "video" | "audio" | "link";
@@ -65,7 +67,7 @@ type ProjectMedia = {
   url?: string;
   createdAt: number;
 };
-type View = "demo" | "search" | "library" | "revisit" | "project" | "stats" | "feedback" | "sharing";
+type View = "projects" | "import" | "tools" | "demo" | "search" | "library" | "revisit" | "project" | "stats" | "feedback" | "sharing";
 type FeedbackFilter = "all" | "ratings" | "notes";
 type FeedbackItem = {
   id: string; kind: "rating" | "note"; demoId: number; demoTitle: string; authorName: string;
@@ -692,52 +694,10 @@ function PhoneRemote({ token }: { token: string }) {
   </main>;
 }
 
-type Attachment = { id: string; name: string; kind: string; size: number };
+type Attachment = { id: string; name: string; kind: string; size: number; version_id?: string };
 
 function DemoAttachments({ demo, revision }: { demo: Demo; revision: number }) {
-  const [files, setFiles] = useState<Attachment[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [status, setStatus] = useState("");
-  const endpoint = `/api/demos/${encodeURIComponent(demo.uuid)}/attachments`;
-  useEffect(() => {
-    let active = true;
-    apiRequest<Attachment[]>(endpoint).then((items) => { if (active) setFiles(items); }).catch(() => { if (active) setStatus("Could not load attachments. Reload to retry."); });
-    return () => { active = false; };
-  }, [endpoint, revision]);
-  async function upload(event: React.ChangeEvent<HTMLInputElement>, kind: "stem" | "project") {
-    const input = event.currentTarget;
-    const selected = Array.from(input.files || []);
-    if (!selected.length) return;
-    setBusy(true);
-    let completed = 0;
-    try {
-      await saveQueue;
-      for (const file of selected) {
-        setStatus(`Uploading ${completed + 1} of ${selected.length}: ${file.name}`);
-        const items = await apiRequest<Attachment[]>(`${endpoint}?kind=${kind}`, { method: "POST", headers: { "content-type": "application/octet-stream", "x-file-name": encodeURIComponent(file.name) }, body: file });
-        setFiles(items);
-        completed++;
-      }
-      setStatus(`${completed} attachment${completed === 1 ? "" : "s"} saved.`);
-    } catch (error) { setStatus(`${completed} saved. ${error instanceof Error ? error.message : "Upload failed"}. Select remaining files to retry.`); }
-    finally { setBusy(false); input.value = ""; }
-  }
-  return <section className="track-discussion demo-attachments" id="demo-files" aria-label="Demo attachments">
-    <h2>Stems &amp; project files · {demo.title}</h2>
-    <div className="demo-mixer-panel"><DemoMixer files={files} master={demo.audioName ? apiUrl(`/api/audio/${demo.id}?v=${demo.checksum || ""}`) : undefined} stemUrl={(id) => apiUrl(`/api/attachments/${id}?play=1`)} /></div>
-    <p>Uploads are safe copies. For a complete Ableton project, use Collect All and Save, then upload a ZIP of the project folder. Attachments stay on this instance and are not shared with friends.</p>
-    {(["project", "stem"] as const).map((kind) => {
-      const title = kind === "project" ? "Project files" : "Stems";
-      const attachments = files.filter((file) => file.kind === kind);
-      return <section className="detail-section" key={kind} aria-label={title}>
-        <h3>{title} <small>({attachments.length})</small></h3>
-        <p>{kind === "project" ? "Upload project files or a ZIP containing the complete project folder." : "Upload individual stems or a ZIP of your exported stems."}</p>
-        <label>{kind === "project" ? "Upload project files" : "Upload stems"}<input type="file" data-kind={kind} multiple disabled={busy} onChange={(event) => upload(event, kind)} /></label>
-        {attachments.length ? <ul>{attachments.map((file) => <li key={file.id}><a href={apiUrl(`/api/attachments/${file.id}`)} download>{file.name}</a><small> · {(file.size / 1024 / 1024).toFixed(1)} MB</small></li>)}</ul> : <p>No {title.toLowerCase()} attached yet.</p>}
-      </section>;
-    })}
-    <p role="status">{status}</p>
-  </section>;
+  return <DemoFiles key={demo.uuid} uuid={demo.uuid} master={demo.audioName ? apiUrl("/api/audio/" + demo.id + "?v=" + (demo.checksum || "")) : undefined} apiUrl={apiUrl} revision={revision} uploads beforeUpload={() => saveQueue} />;
 }
 
 type TrackComment = { uuid: string; demoUuid: string; parentUuid: string | null; authorId: string; authorName: string; body: string; stance: string; createdAt: number };
@@ -817,6 +777,7 @@ export default function Home() {
   const [orders, setOrders] = useState<Record<string, number[]>>({});
   const [selectedTracklists, setSelectedTracklists] = useState<Record<string, string>>({});
   const [view, setView] = useState<View>("library");
+  const [demoTab, setDemoTab] = useState("overview");
   const [demoReturnView, setDemoReturnView] = useState<View>("library");
   const [feedbackFilter, setFeedbackFilter] = useState<FeedbackFilter>("all");
   const [sharingFriendFilter, setSharingFriendFilter] = useState("");
@@ -1257,10 +1218,11 @@ export default function Home() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [rapidMode]);
 
+  const boardFileIds = media.filter(item => item.project === project && item.source === "file").map(item => item.id).sort((a,b) => a-b).join(",");
   useEffect(() => {
     if (view !== "project" || projectTab !== "moodboard") return;
     let active = true;
-    const localItems = media.filter((item) => item.project === project && item.source === "file");
+    const localItems = boardFileIds ? boardFileIds.split(",").map(id => ({id: Number(id)})) : [];
     Promise.all(localItems.map(async (item) => ({ id: item.id, blob: await getProjectMedia(item.id) }))).then((items) => {
       if (!active) return;
       const urls: Record<number, string> = {};
@@ -1271,7 +1233,7 @@ export default function Home() {
       active = false;
       setMediaUrls((current) => { Object.values(current).forEach((url) => URL.revokeObjectURL(url)); return {}; });
     };
-  }, [media, project, projectTab, view]);
+  }, [boardFileIds, project, projectTab, view]);
 
   const listenStats = useMemo(() => {
     const stats = new Map<number, ListenStats>();
@@ -1323,10 +1285,9 @@ export default function Home() {
     return !query || `${item.demoTitle} ${item.authorName} ${item.text}`.toLocaleLowerCase().includes(query);
   });
   const revisitDemos = useMemo(() => demos.filter((demo) => demo.status === "revisit" || demo.status === "unheard").sort((a, b) => a.updatedAt - b.updatedAt), [demos]);
-  const inProjects = demos.filter((demo) => demo.project !== "Unsorted").length;
   const projectNames = [...projects.map((item) => item.name), "Unsorted"];
   const currentProject = projects.find((item) => item.name === project);
-  const projectMedia = media.filter((item) => item.project === project).sort((a, b) => b.createdAt - a.createdAt);
+  const projectMedia = media.filter((item) => item.project === project).sort((a, b) => a.createdAt - b.createdAt);
   const statsScopedDemos = useMemo(() => demos.filter((demo) => matchesStatsFilters(demo, statsFilters)), [demos, statsFilters]);
   const statsOverview = useMemo(() => {
     const audioCount = statsScopedDemos.filter((demo) => Boolean(demo.audioName)).length;
@@ -1677,7 +1638,7 @@ export default function Home() {
     const demo = demos.find((item) => item.id === id);
     if (!demo) return;
     setDemoReturnView(view === "demo" ? demoReturnView : view);
-    setSelectedId(id); setView("demo"); closeMobileMenu();
+    setSelectedId(id); setDemoTab("overview"); setView("demo"); closeMobileMenu();
     const url = new URL(window.location.href); url.searchParams.set("demo", demo.uuid);
     window.history.pushState({}, "", url);
     window.scrollTo(0, 0);
@@ -1838,16 +1799,17 @@ export default function Home() {
           if (i < 0) known.push(demo); else known[i] = demo;
         }
         const endpoint = `/api/demos/${encodeURIComponent(demo.uuid)}/attachments`;
+        const version = await apiRequest<{ id: string }>(`/api/demos/${encodeURIComponent(demo.uuid)}/file-versions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ label: set.name + " · " + new Date().toLocaleString(), notes: "Imported set folder: " + set.name }) });
         let attached = await apiRequest<Attachment[]>(endpoint);
         async function attach(file: File, name: string, kind: string) {
           progress(`${set.name}: ${name}`);
           // On retry, skip only byte-identical copies, not different exports with the same name.
-          for (const item of attached.filter((a) => a.kind === kind && a.name === name && a.size === file.size)) {
+          for (const item of attached.filter((a) => a.version_id === version.id && a.kind === kind && a.name === name && a.size === file.size)) {
             const response = await fetch(apiUrl(`/api/attachments/${item.id}`));
             if (!response.ok) throw new Error("Could not check existing attachment");
             if (await checksumBlob(await response.blob()) === await checksumBlob(file)) return;
           }
-          attached = await apiRequest<Attachment[]>(`${endpoint}?kind=${kind}`, { method: "POST", headers: { "content-type": "application/octet-stream", "x-file-name": encodeURIComponent(name) }, body: file });
+          attached = await apiRequest<Attachment[]>(`${endpoint}?kind=${kind}&version=${version.id}`, { method: "POST", headers: { "content-type": "application/octet-stream", "x-file-name": encodeURIComponent(name) }, body: file });
         }
         for (const file of set.stems) await attach(file, file.webkitRelativePath.split("/").slice(bulk ? 3 : 2).join(" · "), "stem");
         if (set.project.length) { const zip = await archiveProject(set, bulk); await attach(zip, zip.name, "project"); }
@@ -1868,6 +1830,7 @@ export default function Home() {
     setDemos((current) => current.map((demo) => demo.id === selected.id ? { ...demo, audioName: file.name, duration: analysis.duration, bpm: analysis.bpm || demo.bpm, checksum, fileSize: file.size, copyVerifiedAt: Date.now(), updatedAt: Date.now() } : demo));
     refreshStorageInfo().catch(() => undefined);
     event.target.value = "";
+    setAttachmentRevision((n) => n + 1);
   }
 
   async function bulkImport(event: React.FormEvent<HTMLFormElement>) {
@@ -2668,6 +2631,19 @@ export default function Home() {
     setView("library");
   }
 
+  const boardId = useRef(0);
+  function nextBoardId() { boardId.current = Math.max(Date.now(), boardId.current + 1); return boardId.current; }
+  async function addBoardImages(files: File[], position: {x:number;y:number}) {
+    let copied = 0;
+    for (const file of files) {
+      const id = nextBoardId();
+      try { await putProjectMedia(id, file); }
+      catch { throw new Error(`${copied} images added. Could not copy ${file.name}; please retry that file.`); }
+      const item: ProjectMedia = {id, project, kind:"image", source:"file", title:file.name, note:"", fileName:file.name, createdAt:Date.now(), canvas:{x:position.x+copied*30,y:position.y+copied*30,width:300,z:Math.max(0,...projectMedia.map(m => m.canvas?.z ?? 0))+1+copied}};
+      setMedia(current => [...current,item]); copied++;
+    }
+  }
+
   async function addMedia(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -2943,7 +2919,11 @@ export default function Home() {
             }
           }}>Remove track from server</button></section>;
 
-  const currentTitle = view === "demo" ? selected?.title || "Demo not found" : view === "search" ? "Search demos" : view === "feedback" ? "Friend feedback" : view === "sharing" ? "Sharing" : view === "stats" ? "Stats overview" : view === "revisit" ? "Revisit queue" : view === "project" ? project : "Demo library";
+  function navigateWorkspace(next: View) {
+    closeMobileMenu(); setSearch(""); setTagFilter("All tags"); setStatsFilters([]); setProject("All demos"); setFilter("All"); setView(next); window.scrollTo(0, 0);
+  }
+
+  const currentTitle = view === "projects" ? "Projects" : view === "import" ? "Import demos" : view === "tools" ? "Library management" : view === "demo" ? selected?.title || "Demo not found" : view === "search" ? "Search demos" : view === "feedback" ? "Friend feedback" : view === "sharing" ? "Sharing" : view === "stats" ? "Stats overview" : view === "revisit" ? "Revisit queue" : view === "project" ? project : "Demo library";
 
   if (remoteToken) return <PhoneRemote token={remoteToken} />;
 
@@ -2952,62 +2932,69 @@ export default function Home() {
       <aside className="sidebar">
         <div className="brand"><span className="brand-mark">✳</span><span>demolition</span><button type="button" className="mobile-menu-toggle" aria-controls="workspace-navigation" aria-expanded={mobileMenuOpen} onClick={() => setMobileMenuOpen((open) => !open)}><span aria-hidden="true">☰</span><span>Menu</span></button></div>
         <div id="workspace-navigation" className={`mobile-menu ${mobileMenuOpen ? "open" : ""}`}>
-          <div className="sidebar-label nav-group-label">Library</div>
-          <nav className="main-nav" aria-label="Library navigation">
-            <button onClick={() => { closeMobileMenu(); setSearch(""); setTagFilter("All tags"); setStatsFilters([]); selectProject("All demos"); }} className={`nav-item ${view === "library" ? "active" : ""}`} aria-current={view === "library" ? "page" : undefined}><span>▦</span> Demo library <b>{demos.length}</b></button>
-            <button className={`nav-item ${view === "search" ? "active" : ""}`} aria-current={view === "search" ? "page" : undefined} onClick={() => { closeMobileMenu(); setStatsFilters([]); setSearch(""); setView("search"); }}><span>⌕</span> Search demos</button>
-            <button onClick={() => { closeMobileMenu(); setView("stats"); setProject("All demos"); setFilter("All"); }} className={`nav-item ${view === "stats" ? "active" : ""}`} aria-current={view === "stats" ? "page" : undefined}><span>▥</span> Stats overview</button>
+
+          <div className="sidebar-label nav-group-label">Your music</div>
+          <nav className="main-nav" aria-label="Music navigation">
+            <button className={`nav-item ${view === "library" || view === "demo" ? "active" : ""}`} aria-current={view === "library" || view === "demo" ? "page" : undefined} onClick={() => { closeMobileMenu(); setSearch(""); setTagFilter("All tags"); setStatsFilters([]); setFilter("All"); selectProject("All demos"); }}><span>▦</span> Library <b>{demos.length}</b></button>
+            <button className={`nav-item ${view === "search" ? "active" : ""}`} aria-current={view === "search" ? "page" : undefined} onClick={() => { closeMobileMenu(); setSearch(""); setStatsFilters([]); setView("search"); }}><span>⌕</span> Search & filter</button>
+            <button className="nav-item" onClick={() => { closeMobileMenu(); startRapidListen(); }}><span>▶</span> Listen & rate</button>
+            <button className={`nav-item ${view === "revisit" ? "active" : ""}`} aria-current={view === "revisit" ? "page" : undefined} onClick={() => { closeMobileMenu(); setSearch(""); setTagFilter("All tags"); setStatsFilters([]); setFilter("All"); setProject("All demos"); setView("revisit"); }}><span>◌</span> Review queue <b>{revisitDemos.length}</b></button>
+            <button className={`nav-item ${view === "projects" || view === "project" ? "active" : ""}`} aria-current={view === "projects" || view === "project" ? "page" : undefined} onClick={() => navigateWorkspace("projects")}><span>☷</span> Projects <b>{projects.length}</b></button>
+            <button className={`nav-item ${view === "stats" ? "active" : ""}`} aria-current={view === "stats" ? "page" : undefined} onClick={() => navigateWorkspace("stats")}><span>▥</span> Statistics</button>
           </nav>
-          <div className="sidebar-label nav-group-label">Listen & review</div>
-          <nav className="main-nav" aria-label="Listen & review navigation">
-            <button onClick={() => { closeMobileMenu(); startRapidListen(); }} className="nav-item"><span>▶</span> Listen mode</button>
-            <button onClick={() => { closeMobileMenu(); setSearch(""); setTagFilter("All tags"); setStatsFilters([]); setView("revisit"); setProject("All demos"); setFilter("All"); }} className={`nav-item ${view === "revisit" ? "active" : ""}`} aria-current={view === "revisit" ? "page" : undefined}><span>◌</span> Revisit queue <b className="inbox-count">{revisitDemos.length}</b></button>
+          <div className="sidebar-label nav-group-label">Collaboration</div>
+          <nav className="main-nav" aria-label="Collaboration navigation">
+            <button onClick={openFeedback} className={`nav-item ${view === "feedback" ? "active" : ""}`} aria-current={view === "feedback" ? "page" : undefined}><span>↯</span> Feedback <b>{unreadFeedbackCount || feedbackItems.length}</b></button>
+            <button className={`nav-item ${view === "sharing" ? "active" : ""}`} aria-current={view === "sharing" ? "page" : undefined} onClick={() => { navigateWorkspace("sharing"); setSelectedDemoIds(new Set()); setSharingFriendFilter(""); }}><span>⇄</span> Sharing <b>{directSharedDemoCount}</b></button>
+            <button className="nav-item" onClick={() => { closeMobileMenu(); setMeshProgress(""); setShowAccount(true); }}><span>◎</span> Friends & sync <b>{friends.length}</b></button>
           </nav>
-          <div className="sidebar-label project-label">Projects <button onClick={() => { closeMobileMenu(); setShowProject(true); }} aria-label="Add project">+</button></div>
-          <div className="project-list">
-            {projects.map((item) => <button key={item.name} onClick={() => { closeMobileMenu(); selectProject(item.name); }} className={`project-item ${view === "project" && project === item.name ? "selected" : ""}`}><span className={`project-dot ${item.color}`} />{item.name}<span className="count">{demos.filter((demo) => demo.project === item.name).length}</span></button>)}
-            <button onClick={() => { closeMobileMenu(); selectProject("Unsorted"); }} className={`project-item ${view === "project" && project === "Unsorted" ? "selected" : ""}`}><span className="project-dot muted" />Unsorted<span className="count">{demos.filter((demo) => demo.project === "Unsorted").length}</span></button>
-          </div>
-          <div className="sidebar-label nav-group-label">Friends</div>
-          <nav className="main-nav" aria-label="Friends navigation">
-            <button onClick={openFeedback} className={`nav-item ${view === "feedback" ? "active" : ""}`} aria-current={view === "feedback" ? "page" : undefined}><span>↯</span> Friend feedback {unreadFeedbackCount > 0 ? <b className="inbox-count">{unreadFeedbackCount}</b> : <b>{feedbackItems.length}</b>}</button>
-            <button onClick={() => { closeMobileMenu(); setSelectedDemoIds(new Set()); setSearch(""); setSharingFriendFilter(""); setView("sharing"); setProject("All demos"); }} className={`nav-item ${view === "sharing" ? "active" : ""}`} aria-current={view === "sharing" ? "page" : undefined}><span>⇄</span> Sharing <b>{directSharedDemoCount}</b></button>
-            <button onClick={() => { closeMobileMenu(); setMeshProgress(""); setShowAccount(true); }} className="nav-item"><span>◎</span> Friends &amp; sync <b>{friends.length}</b></button>
+          <div className="sidebar-label nav-group-label">Manage</div>
+          <nav className="main-nav" aria-label="Management navigation">
+            <button className={`nav-item ${view === "import" ? "active" : ""}`} aria-current={view === "import" ? "page" : undefined} onClick={() => navigateWorkspace("import")}><span>＋</span> Import demos</button>
+            <button className={`nav-item ${view === "tools" ? "active" : ""}`} aria-current={view === "tools" ? "page" : undefined} onClick={() => navigateWorkspace("tools")}><span>⚙</span> Library management</button>
           </nav>
-          <details className="nav-tools">
-            <summary>Library tools</summary>
-            <button onClick={() => { closeMobileMenu(); setShowTags(true); }} className="nav-item"><span>#</span> Manage tags <b>{tags.length}</b></button>
-            <button onClick={() => { closeMobileMenu(); setDetectProgress(""); setShowBulkDetect(true); }} className="nav-item"><span>⌁</span> Detect BPM <b>{demos.filter((demo) => !demo.bpm).length}</b></button>
-            <button className="nav-item" onClick={() => { closeMobileMenu(); setKeyDetectProgress(""); setShowKeyDetect(true); }}><span>♬</span> Analyze keys</button>
-            <button onClick={() => { closeMobileMenu(); exportBackup(); }} className="nav-item"><span>⇩</span> Export backup</button>
-            <button onClick={() => { closeMobileMenu(); importRef.current?.click(); }} className="nav-item"><span>⇧</span> Restore backup</button>
-            <button onClick={() => { closeMobileMenu(); setStorageProgress(""); refreshStorageInfo().catch(() => undefined); setShowStorage(true); }} className="nav-item"><span>◈</span> Storage health {pendingBulkImport?.conflicts.length ? <b className="inbox-count">{pendingBulkImport.conflicts.length}</b> : null}</button>
-            <input ref={importRef} className="sr-only" type="file" accept="application/json" onChange={importBackup} />
-          </details>
+          <input ref={importRef} className="sr-only" type="file" accept="application/json" onChange={importBackup} />
+
         </div>
         <div className="local-badge"><span>●</span><div><strong>Local SQLite library</strong><small>Original files remain untouched</small></div></div>
         <div className="sidebar-bottom"><div className="mini-avatar">{account?.displayName.slice(0, 2).toUpperCase() || "—"}</div><div><strong>{account?.displayName || "Local owner"}</strong><span>{friends.length} connected {friends.length === 1 ? "friend" : "friends"}</span></div></div>
       </aside>
 
       <section className="content">
-        <header className="topbar"><div className="breadcrumb"><span>Workspace</span><i>/</i><strong>{currentTitle}</strong></div><div className="top-actions"><label className="search"><span>⌕</span><input value={search} onChange={(event) => { setStatsFilters([]); setSearch(event.target.value); if (view === "demo" || view === "stats" || view === "project") setView("search"); }} placeholder={view === "feedback" ? "Search feedback" : "Search demos"} /></label><button className="avatar" aria-label="Open account" onClick={() => setShowAccount(true)}>{account?.displayName.slice(0, 2).toUpperCase() || "—"}</button></div></header>
+        <header className="topbar"><div className="breadcrumb"><span>Workspace</span><i>/</i><strong>{currentTitle}</strong></div><div className="top-actions"><label className="search"><span>⌕</span><input value={search} onChange={(event) => { setStatsFilters([]); setSearch(event.target.value); if (view !== "feedback" && view !== "sharing") setView("search"); }} placeholder={view === "feedback" ? "Search feedback" : "Search demos"} /></label><button className="avatar" aria-label="Open account" onClick={() => setShowAccount(true)}>{account?.displayName.slice(0, 2).toUpperCase() || "—"}</button></div></header>
         <div className="page-content">
-          <div className="heading-row"><div><div className="eyebrow">{todayLabel || "TODAY"}</div><h1>{currentTitle}</h1><p className="lede">{view === "demo" ? "Playback, project files, stems and feedback." : view === "search" ? "Combine text, tags, tempo, votes, and listens to find demos." : view === "feedback" ? <><strong>{feedbackItems.length}</strong> ratings and timed notes received from friends.</> : view === "sharing" ? <><strong>{directSharedDemoCount}</strong> demos shared directly with <strong>{sharedFriendCount}</strong> {sharedFriendCount === 1 ? "friend" : "friends"}.</> : view === "stats" ? <>{statsFilters.length ? "Filtered stats for" : "A catalogue overview of"} <strong>{statsFilteredDemos.length} demos</strong>, their lengths, tempos, and keys.</> : view === "revisit" ? `${revisitDemos.length} demos are queued, oldest first.` : view === "project" ? projectTab === "moodboard" ? "Collect visual, video, and audio references for this project." : "Move demos between the candidate pool and ordered tracklist." : <>Your library contains <strong>{demos.length} demos</strong>, with <strong>{revisitDemos.length}</strong> queued for review.</>}</p></div><div className="heading-actions">{view === "feedback" && <button className="primary-button" disabled={!friends.length || syncingFriendIds.length > 0} onClick={syncAllFriends}>{syncingFriendIds.length ? "Syncing…" : "Sync friends"}</button>}{view === "stats" && <><button className="secondary-button" onClick={() => { setDetectProgress(""); setShowBulkDetect(true); }}>⌁ Detect BPM</button><button className="secondary-button" onClick={() => { setKeyDetectProgress(""); setShowKeyDetect(true); }}>♬ Analyze keys</button><button className="primary-button stats-listen-button" disabled={!statsAuditionDemos.length} onClick={() => startRapidListen(statsAuditionDemos)}>{statsAuditionDemos.length ? `▶ Listen to ${statsFilters.length ? "filtered " : ""}${statsAuditionDemos.length}` : statsFilteredDemos.length ? "No local audio" : "No matching demos"}</button></>}{view === "revisit" && <button className="secondary-button" onClick={pickForMe}>Pick one for me</button>}{view === "project" && project !== "Unsorted" && <button className="settings-button" onClick={() => setShowProjectSettings(true)} aria-label={`Manage ${project}`}>⚙ Project settings</button>}{view === "project" && project !== "Unsorted" && projectTab === "moodboard" && <button className="secondary-button" onClick={() => setShowMedia(true)}>＋ Add reference</button>}{(view === "library" || view === "project" || view === "revisit") && <><button className="secondary-button" onClick={openSingleImport}>＋ One demo</button><button className="primary-button" onClick={openBulkImport}><span>＋</span> {pendingBulkImport?.conflicts.length ? `Resolve ${pendingBulkImport.conflicts.length} conflicts` : "Bulk import"}</button></>}</div></div>
-          {ready && (view === "library" || view === "project") && <SetImport demos={demos.filter((d) => d.ownerId === account?.id)} onImport={importSets} audioUrl={(id) => apiUrl(`/api/audio/${id}`)} />}
+          <div className="heading-row"><div><div className="eyebrow">{todayLabel || "TODAY"}</div><h1>{currentTitle}</h1><p className="lede">{view === "projects" ? "Choose a project to arrange tracklists and collect references." : view === "import" ? "Add audio bounces or complete sets. Original files remain untouched." : view === "tools" ? "Tags, audio analysis, storage and backups." : view === "demo" ? "Playback, project files, stems and feedback." : view === "search" ? "Combine text, tags, tempo, votes, and listens to find demos." : view === "feedback" ? <><strong>{feedbackItems.length}</strong> ratings and timed notes received from friends.</> : view === "sharing" ? <><strong>{directSharedDemoCount}</strong> demos shared directly with <strong>{sharedFriendCount}</strong> {sharedFriendCount === 1 ? "friend" : "friends"}.</> : view === "stats" ? <>{statsFilters.length ? "Filtered stats for" : "A catalogue overview of"} <strong>{statsFilteredDemos.length} demos</strong>, their lengths, tempos, and keys.</> : view === "revisit" ? `${revisitDemos.length} demos are queued, oldest first.` : view === "project" ? projectTab === "moodboard" ? "Collect visual, video, and audio references for this project." : "Move demos between the candidate pool and ordered tracklist." : <>Your library contains <strong>{demos.length} demos</strong>, with <strong>{revisitDemos.length}</strong> queued for review.</>}</p></div><div className="heading-actions">{view === "feedback" && <button className="primary-button" disabled={!friends.length || syncingFriendIds.length > 0} onClick={syncAllFriends}>{syncingFriendIds.length ? "Syncing…" : "Sync friends"}</button>}{view === "stats" && <><button className="secondary-button" onClick={() => { setDetectProgress(""); setShowBulkDetect(true); }}>⌁ Detect BPM</button><button className="secondary-button" onClick={() => { setKeyDetectProgress(""); setShowKeyDetect(true); }}>♬ Analyze keys</button><button className="primary-button stats-listen-button" disabled={!statsAuditionDemos.length} onClick={() => startRapidListen(statsAuditionDemos)}>{statsAuditionDemos.length ? `▶ Listen to ${statsFilters.length ? "filtered " : ""}${statsAuditionDemos.length}` : statsFilteredDemos.length ? "No local audio" : "No matching demos"}</button></>}{view === "revisit" && <button className="secondary-button" onClick={pickForMe}>Pick one for me</button>}{view === "project" && project !== "Unsorted" && <button className="settings-button" onClick={() => setShowProjectSettings(true)} aria-label={`Manage ${project}`}>⚙ Project settings</button>}{view === "project" && project !== "Unsorted" && projectTab === "moodboard" && <button className="secondary-button" onClick={() => setShowMedia(true)}>＋ Add reference</button>}{view === "projects" && <button className="primary-button" onClick={() => setShowProject(true)}>＋ New project</button>}{view === "library" && <button className="primary-button" onClick={() => navigateWorkspace("import")}>＋ Import demos</button>}</div></div>
+
           {importNotice && <div className="import-notice" role="status"><span>✓</span><p>{importNotice}</p><button onClick={() => setImportNotice("")} aria-label="Dismiss import summary">×</button></div>}
 
-          {view === "project" && project !== "Unsorted" && projectTab === "tracklist" && <ProjectTracklists key={project} lists={projectVersions} selected={selectedTracklist?.id ?? ""} onSelect={(id) => setSelectedTracklists((current) => ({ ...current, [project]: id }))} onChange={(tracklists) => setProjects((current) => current.map((item) => item.name === project ? { ...item, tracklists } : item))} ids={projectOrder} tracks={demos.filter((demo) => demo.project === project)} onStarted={(id) => { detailAudioRef.current?.pause(); markDemoListened(id); }} renderFeedback={(id, session) => { const demo = demos.find((item) => item.id === id); return demo ? <ProjectTrackFeedback key={`${session}:${demo.uuid}`} demo={demo} account={account} listens={listens} onVote={(vote) => setListens((current) => [vote, ...current.filter((item) => item.eventUuid !== vote.eventUuid)])} /> : null; }} audioUrl={(id) => apiUrl(`/api/audio/${id}`)} />}
+          {view === "project" && <button className="text-button" onClick={() => navigateWorkspace("projects")}>← All projects</button>}
+          {view === "project" && project !== "Unsorted" && <div className="project-tabs" role="tablist" aria-label={`${project} project sections`}><button role="tab" aria-selected={projectTab === "tracklist"} className={projectTab === "tracklist" ? "active" : ""} onClick={() => setProjectTab("tracklist")}><span>☷</span> Tracklists <b>{projectVersions.length + 1}</b></button><button role="tab" aria-selected={projectTab === "moodboard"} className={projectTab === "moodboard" ? "active" : ""} onClick={() => setProjectTab("moodboard")}><span>▦</span> Moodboard <b>{projectMedia.length}</b></button></div>}
+          {view === "project" && project !== "Unsorted" && projectTab === "tracklist" && <ProjectTracklists key={project} mainIds={orders[project] ?? []} lists={projectVersions} selected={selectedTracklist?.id ?? ""} onSelect={(id) => setSelectedTracklists((current) => ({ ...current, [project]: id }))} onChange={(tracklists) => setProjects((current) => current.map((item) => item.name === project ? { ...item, tracklists } : item))} ids={projectOrder} tracks={demos.filter((demo) => demo.project === project)} onStarted={(id) => { detailAudioRef.current?.pause(); markDemoListened(id); }} renderFeedback={(id, session) => { const demo = demos.find((item) => item.id === id); return demo ? <ProjectTrackFeedback key={`${session}:${demo.uuid}`} demo={demo} account={account} listens={listens} onVote={(vote) => setListens((current) => [vote, ...current.filter((item) => item.eventUuid !== vote.eventUuid)])} /> : null; }} renderPlayer={(id, session, onEnded, onStarted) => { const demo = demos.find((d) => d.id === id); return demo ? <DemoFiles key={session + ":" + demo.uuid} uuid={demo.uuid} master={demo.audioName ? apiUrl("/api/audio/" + id) : undefined} apiUrl={apiUrl} autoPlay onEnded={onEnded} onStarted={onStarted} /> : null; }} />}
           {statsFilters.length > 0 && view !== "stats" && <div className="stats-filter-notice" role="status"><span>FILTER</span><div className="stats-filter-copy"><p><strong>{statsFilteredDemos.length}</strong> matching demos from the statistics view.</p><div className="stats-filter-chips">{statsFilters.map((activeFilter) => <button type="button" className="stats-filter-chip" key={`${activeFilter.type}-${activeFilter.value}`} onClick={() => setStatsFilters(statsFilters.filter((filter) => filter !== activeFilter))} aria-label={`Remove ${activeFilter.label} filter`}>{activeFilter.label} ×</button>)}</div></div><button className="stats-filter-listen" disabled={!statsAuditionDemos.length} onClick={() => startRapidListen(statsAuditionDemos)}>{statsAuditionDemos.length ? `▶ Listen to ${statsAuditionDemos.length}` : statsFilteredDemos.length ? "No local audio" : "No matches"}</button><button onClick={() => setStatsFilters([])}>Clear all ×</button></div>}
 
-          {view === "demo" ? selected ? <article className="demo-detail-page" aria-label="Demo detail">
-            <nav className="demo-detail-actions" aria-label="Demo actions"><button className="secondary-button" onClick={() => { setView(demoReturnView); window.scrollTo(0, 0); }}>← Back to {demoReturnView === "project" ? project : demoReturnView === "search" ? "search" : "library"}</button><button className="secondary-button" onClick={() => document.querySelector<HTMLInputElement>("#demo-files input[data-kind=project]")?.click()}>Upload project files</button><button className="secondary-button" onClick={() => document.querySelector<HTMLInputElement>("#demo-files input[data-kind=stem]")?.click()}>Upload stems</button><button className="primary-button" onClick={openEdit}>Edit demo</button><button className={`favorite-button ${selected.favorite ? "active" : ""}`} aria-pressed={Boolean(selected.favorite)} onClick={() => toggleFavorite(selected.id)}>{selected.favorite ? "★ Favourite" : "☆ Favourite"}</button><button className="secondary-button" onClick={() => startRapidListen([selected])}>Listen & rate / timed notes</button></nav>
-            <section className="demo-detail-summary"><div><span className="eyebrow">DEMO DETAILS</span><p>{selected.project} · {statusLabels[selected.status]}</p><p>{selected.bpm ? `${selected.bpm} BPM` : "BPM unknown"} · {selected.key} · {selected.duration}{selected.creationDate ? ` · ${formatCreationDate(selected.creationDate)}` : ""}</p><p>{selected.tags.join(" · ") || "No tags — use Edit demo to add tags."}</p></div><div><span className="eyebrow">LISTENING</span><p>↑ {selectedStats.up} · ↓ {selectedStats.down} · {formatUpvoteRate(selectedStats)} · {demoListenCount(selected)} listens</p><p>Net score {selectedStats.score} · You {selectedOwnerScore} · Friends {selectedFriendScore}</p></div></section>
-            <section className="demo-detail-imports" aria-label="Upload demo files"><div><h2>Upload files</h2><p>Attach the master, stems or project files to this demo.</p></div><div className="demo-detail-actions"><label className="secondary-button">{selected.audioName ? "Replace master audio" : "Upload master audio"}<input ref={attachRef} type="file" accept="audio/*,.wav,.aif,.aiff,.mp3,.m4a,.flac" onChange={attachAudio} /></label>{account?.id === selected.ownerId && <SetImport key={`set-${selected.uuid}`} demos={[selected]} single={selected} onImport={importSets} audioUrl={(id) => apiUrl(`/api/audio/${id}`)} />}</div><p>{selected.audioName || "No master attached"}</p></section>
-            <DemoAttachments key={`attachments-${selected.uuid}`} demo={selected} revision={attachmentRevision} />
-            <div className="demo-detail-columns"><section className="track-discussion"><h2>Notes & next action</h2><p className="demo-note-text">{selected.note || "No notes yet."}</p><p>{selected.nextAction || "No next action set."}</p><button className="secondary-button" onClick={openEdit}>Edit details, tags and notes</button><button className="secondary-button" disabled={detectingId === selected.id} onClick={detectSelectedBpm}>{detectingId === selected.id ? "Detecting BPM…" : "Detect BPM"}</button></section><section className="track-discussion"><h2>Sharing</h2>{selectedSharing}</section></div>
-            <TrackDiscussion key={selected.uuid} demo={selected} />
-            <details className="track-discussion"><summary>Ratings and timed notes</summary>{selectedScoreBreakdown}{selectedListenHistory}{selectedTimedNoteHistory}</details>
-            <details className="track-discussion"><summary>Storage & removal</summary>{playbackError && <p role="alert">{playbackError}</p>}{audioUrl && <button className="secondary-button" onClick={removeSelectedAudioCopy}>Remove master copy</button>}{demoRemoval}</details>
+
+          {view === "projects" ? <section className="workspace-cards" aria-label="Projects">
+            {projects.map((item) => <button className="workspace-card project-card" key={item.name} onClick={() => { setProjectTab("tracklist"); selectProject(item.name); }}><span className="eyebrow">PROJECT</span><h2>{item.name}</h2><p>{demos.filter((d) => d.project === item.name).length} demos · {(item.tracklists?.length ?? 0) + 1} tracklists</p><span className="card-link">Open project →</span></button>)}
+            {!projects.length && <article className="workspace-card"><h2>No projects yet</h2><p>Create a project to group demos and try different track orders.</p><button className="primary-button" onClick={() => setShowProject(true)}>New project</button></article>}
+            <button className="workspace-card project-card" onClick={() => { setProjectTab("tracklist"); selectProject("Unsorted"); }}><span className="eyebrow">UNASSIGNED</span><h2>Unsorted demos</h2><p>{demos.filter((d) => d.project === "Unsorted").length} demos not assigned to a project</p><span className="card-link">Browse demos →</span></button>
+          </section> : view === "import" ? <section className="workspace-cards" aria-label="Import options">
+            <article className="workspace-card"><h2>Audio files & folders</h2><p>Import multiple demos from folders and subfolders. Non-audio files are ignored; duplicates are reviewed before importing.</p><button className="primary-button" onClick={openBulkImport}>{pendingBulkImport?.conflicts.length ? "Resume conflict review" : "Choose audio files or folder"}</button><button className="secondary-button" onClick={openSingleImport}>Add one demo</button></article>
+            <article className="workspace-card"><h2>Complete project sets</h2><p>Import folders organised as Set Name / Master, Stems and Project. Match sets to existing demos or create new ones.</p>{ready && <SetImport demos={demos.filter((d) => d.ownerId === account?.id)} onImport={importSets} audioUrl={(id) => apiUrl(`/api/audio/${id}`)} />}</article>
+          </section> : view === "tools" ? <section className="workspace-cards" aria-label="Library management">
+            <article className="workspace-card"><h2>Tags</h2><p>{tags.length} custom tags for batches, sessions and other groups.</p><button className="secondary-button" onClick={() => setShowTags(true)}>Manage tags</button></article>
+            <article className="workspace-card"><h2>Audio analysis</h2><p>Estimate missing tempo and musical key information from your audio.</p><button className="secondary-button" onClick={() => { setDetectProgress(""); setShowBulkDetect(true); }}>Detect BPM</button><button className="secondary-button" onClick={() => { setKeyDetectProgress(""); setShowKeyDetect(true); }}>Analyze keys</button></article>
+            <article className="workspace-card"><h2>Storage & import conflicts</h2><p>Inspect managed copies, missing files and unresolved imports.</p><button className="secondary-button" onClick={() => { setStorageProgress(""); refreshStorageInfo().catch(() => undefined); setShowStorage(true); }}>Open storage health</button></article>
+            <article className="workspace-card"><h2>Backup & restore</h2><p>Export or restore library metadata. Keep a separate backup of your audio and project files.</p><button className="secondary-button" onClick={exportBackup}>Export backup</button><button className="secondary-button" onClick={() => importRef.current?.click()}>Restore backup</button></article>
+          </section> : view === "demo" ? selected ? <article className="demo-detail-page" aria-label="Demo detail">
+            <nav className="demo-detail-actions" aria-label="Demo actions"><button className="secondary-button" onClick={() => { setView(demoReturnView); window.scrollTo(0, 0); }}>← Back</button><button className="primary-button" onClick={() => startRapidListen([selected])}>Listen & rate</button><button className="secondary-button" onClick={openEdit}>Edit details</button><button className={`favorite-button ${selected.favorite ? "active" : ""}`} aria-pressed={Boolean(selected.favorite)} onClick={() => toggleFavorite(selected.id)}>{selected.favorite ? "★ Favourite" : "☆ Favourite"}</button></nav>
+            <nav className="section-nav" aria-label="Demo sections">{[["overview", "Overview & playback"], ["files", "Files & versions"], ["feedback", "Comments & ratings"], ["sharing", "Sharing"]].map(([id, label]) => <button key={id} aria-current={demoTab === id ? "page" : undefined} onClick={() => setDemoTab(id)}>{label}</button>)}</nav>
+            <section hidden={demoTab !== "overview"} className="demo-detail-summary"><div><span className="eyebrow">DEMO DETAILS</span><p>{selected.project} · {statusLabels[selected.status]}</p><p>{selected.bpm ? `${selected.bpm} BPM` : "BPM unknown"} · {selected.key} · {selected.duration}{selected.creationDate ? ` · ${formatCreationDate(selected.creationDate)}` : ""}</p><p>{selected.tags.join(" · ") || "No tags — use Edit demo to add tags."}</p></div><div><span className="eyebrow">LISTENING</span><p>↑ {selectedStats.up} · ↓ {selectedStats.down} · {formatUpvoteRate(selectedStats)} · {demoListenCount(selected)} listens</p><p>Net score {selectedStats.score} · You {selectedOwnerScore} · Friends {selectedFriendScore}</p></div></section>
+            <section hidden={demoTab !== "files"} className="demo-detail-imports" aria-label="Upload demo files"><div><h2>Upload files</h2><p>Attach the master, stems or project files to this demo.</p></div><div className="demo-detail-actions"><label className="secondary-button">{selected.audioName ? "Replace master audio" : "Upload master audio"}<input ref={attachRef} type="file" accept="audio/*,.wav,.aif,.aiff,.mp3,.m4a,.flac" onChange={attachAudio} /></label>{account?.id === selected.ownerId && <SetImport key={`set-${selected.uuid}`} demos={[selected]} single={selected} onImport={importSets} audioUrl={(id) => apiUrl(`/api/audio/${id}`)} />}</div><p>{selected.audioName || "No master attached"}</p></section>
+            <div hidden={demoTab !== "overview" && demoTab !== "files"} className={demoTab === "overview" ? "demo-playback-only" : ""}><DemoAttachments key={`attachments-${selected.uuid}`} demo={selected} revision={attachmentRevision} /></div>
+            <div className="demo-detail-columns" hidden={demoTab !== "overview" && demoTab !== "sharing"}><section hidden={demoTab !== "overview"} className="track-discussion"><h2>Notes & next action</h2><p className="demo-note-text">{selected.note || "No notes yet."}</p><p>{selected.nextAction || "No next action set."}</p><button className="secondary-button" onClick={openEdit}>Edit details, tags and notes</button><button className="secondary-button" disabled={detectingId === selected.id} onClick={detectSelectedBpm}>{detectingId === selected.id ? "Detecting BPM…" : "Detect BPM"}</button></section><section hidden={demoTab !== "sharing"} className="track-discussion"><h2>Sharing</h2>{selectedSharing}</section></div>
+            <div hidden={demoTab !== "feedback"}><TrackDiscussion key={selected.uuid} demo={selected} /></div>
+            <details hidden={demoTab !== "feedback"} className="track-discussion" open><summary>Ratings and timed notes</summary>{selectedScoreBreakdown}{selectedListenHistory}{selectedTimedNoteHistory}</details>
+            <details hidden={demoTab !== "files"} className="track-discussion"><summary>Storage & removal</summary>{playbackError && <p role="alert">{playbackError}</p>}{audioUrl && <button className="secondary-button" onClick={removeSelectedAudioCopy}>Remove master copy</button>}{demoRemoval}</details>
           </article> : <section className="empty-state"><h2>Demo not found</h2><button onClick={() => setView("library")}>Open library</button></section> : view === "search" ? <DemoSearch demos={demos} statsFor={statsFor} query={search} setQuery={setSearch} onListen={startRapidListen} onOpen={(demo) => openDemo(demo.id)} /> : view === "feedback" ? <section className="feedback-page" aria-label="Friend feedback">
             <div className="feedback-summary">
               <div><span className="stat-label">ALL FEEDBACK</span><strong>{feedbackItems.length}</strong></div>
@@ -3038,7 +3025,7 @@ export default function Home() {
             <section className="sharing-panel">
               <div className="sharing-toolbar"><label>Filter friend<select value={sharingFriendFilter} onChange={(event) => setSharingFriendFilter(event.target.value)} aria-label="Filter shares by friend"><option value="">All friends</option>{friends.map((friend) => <option key={friend.id} value={friend.id}>{friend.displayName}</option>)}</select></label><span>{sharingDemos.length} {sharingDemos.length === 1 ? "demo" : "demos"} shown</span><button type="button" className="secondary-button" disabled={!selectedDemos.length || !friends.length} onClick={openBulkShare}>Share selected</button><button type="button" className="sharing-revoke-button" disabled={!selectedDemos.length || !friends.length} onClick={openBulkRevoke}>Revoke selected</button></div>
               <div className="sharing-select-row"><label><input type="checkbox" checked={sharingDemos.length > 0 && sharingDemos.every((demo) => selectedDemoIds.has(demo.id))} onChange={() => { const ids = sharingDemos.map((demo) => demo.id); setSelectedDemoIds((current) => { const next = new Set(current); const allSelected = ids.length > 0 && ids.every((id) => next.has(id)); ids.forEach((id) => allSelected ? next.delete(id) : next.add(id)); return next; }); }} aria-label="Select all shown demos" /> Select all shown</label><span>{selectedDemos.length ? `${selectedDemos.length} selected` : "Select demos to change access"}</span></div>
-              {sharingDemos.length ? <div className="sharing-list">{sharingDemos.map((demo) => <article className={`sharing-row ${selectedDemoIds.has(demo.id) ? "selected" : ""}`} key={demo.id}><label className="sharing-checkbox"><input type="checkbox" checked={selectedDemoIds.has(demo.id)} onChange={() => toggleDemoSelection(demo.id)} aria-label={`Select ${demo.title}`} /></label><button type="button" className="sharing-demo" onClick={() => { setSelectedId(demo.id); setView("library"); }}><span className={`cover cover-${demo.id % 4}`}><i /></span><span><strong>{demo.title}</strong><small>{demo.project} · {demo.tags.length ? demo.tags.join(" · ") : "No tags"}</small></span></button><div className="sharing-recipients">{friends.map((friend) => { const direct = shares.some((share) => share.demoUuid === demo.uuid && share.friendId === friend.id); const inherited = projectShares.some((share) => share.project === demo.project && share.friendId === friend.id); if (!direct && !inherited) return null; return <span className={`${inherited ? "inherited" : "direct"}`} key={friend.id} title={inherited ? `Shared through ${demo.project}` : "Direct demo share"}>{friend.displayName}{inherited && <small>project</small>}</span>; })}{!friends.some((friend) => shares.some((share) => share.demoUuid === demo.uuid && share.friendId === friend.id) || projectShares.some((share) => share.project === demo.project && share.friendId === friend.id)) && <em>Not shared</em>}</div></article>)}</div> : <div className="sharing-empty"><span>⇄</span><strong>{demos.length ? "No shares match this view" : "No demos in the library"}</strong><small>{demos.length ? "Change the friend filter or share selected demos." : "Import demos before managing access."}</small></div>}
+              {sharingDemos.length ? <div className="sharing-list">{sharingDemos.map((demo) => <article className={`sharing-row ${selectedDemoIds.has(demo.id) ? "selected" : ""}`} key={demo.id}><label className="sharing-checkbox"><input type="checkbox" checked={selectedDemoIds.has(demo.id)} onChange={() => toggleDemoSelection(demo.id)} aria-label={`Select ${demo.title}`} /></label><button type="button" className="sharing-demo" onClick={() => openDemo(demo.id)}><span className={`cover cover-${demo.id % 4}`}><i /></span><span><strong>{demo.title}</strong><small>{demo.project} · {demo.tags.length ? demo.tags.join(" · ") : "No tags"}</small></span></button><div className="sharing-recipients">{friends.map((friend) => { const direct = shares.some((share) => share.demoUuid === demo.uuid && share.friendId === friend.id); const inherited = projectShares.some((share) => share.project === demo.project && share.friendId === friend.id); if (!direct && !inherited) return null; return <span className={`${inherited ? "inherited" : "direct"}`} key={friend.id} title={inherited ? `Shared through ${demo.project}` : "Direct demo share"}>{friend.displayName}{inherited && <small>project</small>}</span>; })}{!friends.some((friend) => shares.some((share) => share.demoUuid === demo.uuid && share.friendId === friend.id) || projectShares.some((share) => share.project === demo.project && share.friendId === friend.id)) && <em>Not shared</em>}</div></article>)}</div> : <div className="sharing-empty"><span>⇄</span><strong>{demos.length ? "No shares match this view" : "No demos in the library"}</strong><small>{demos.length ? "Change the friend filter or share selected demos." : "Import demos before managing access."}</small></div>}
               {bulkShareProgress && <div className="mesh-progress" role="status">{bulkShareProgress}</div>}
               <p className="sharing-note">Direct shares can be granted or revoked here. Project shares are shown as inherited access and must be changed in that project&apos;s settings.</p>
             </section>
@@ -3116,31 +3103,21 @@ export default function Home() {
               </section>
             </div>
           </section> : <>
-          <div className="stats-grid"><div className="stat-card hero-stat"><span className="stat-label">TOTAL DEMOS</span><strong>{demos.length}</strong><span className="stat-foot lime-text">Saved on this device</span><div className="mini-bars">{Array.from({ length: 12 }, (_, index) => <i key={index} />)}</div></div><div className="stat-card"><span className="stat-label">IN PROJECTS</span><strong>{inProjects}</strong><span className="stat-foot">{demos.length ? Math.round(inProjects / demos.length * 100) : 0}% of your library</span><div className="progress"><span style={{ width: `${demos.length ? inProjects / demos.length * 100 : 0}%` }} /></div></div><div className="stat-card"><span className="stat-label">READY TO REVISIT</span><strong>{revisitDemos.length}</strong><span className="stat-foot coral-text">Sorted by oldest update</span><div className="ring" style={{ background: `conic-gradient(var(--coral) 0 ${demos.length ? revisitDemos.length / demos.length * 100 : 0}%, #383a34 0)` }}><span>{demos.length ? Math.round(revisitDemos.length / demos.length * 100) : 0}%</span></div></div></div>
 
-          {view === "project" && project !== "Unsorted" && <div className="project-tabs" role="tablist" aria-label={`${project} project sections`}><button role="tab" aria-selected={projectTab === "tracklist"} className={projectTab === "tracklist" ? "active" : ""} onClick={() => setProjectTab("tracklist")}><span>☷</span> Tracklist <b>{projectOrder.length}</b></button><button role="tab" aria-selected={projectTab === "moodboard"} className={projectTab === "moodboard" ? "active" : ""} onClick={() => setProjectTab("moodboard")}><span>▦</span> Moodboard <b>{projectMedia.length}</b></button></div>}
+
+
 
           {view === "project" && projectTab === "moodboard" ? <section className="moodboard-view">
             <div className="mood-header"><div><div className="eyebrow">AESTHETIC NOTES</div><textarea value={currentProject?.mood ?? ""} onChange={(event) => updateProjectMood(event.target.value)} placeholder="Describe the intended visual and sonic direction" rows={2} /></div><span className="saved-note">{ready ? "✓ Saved locally" : "Loading…"}</span></div>
-            {projectMedia.length ? <div className="mood-grid">{projectMedia.map((item) => {
-              const source = item.source === "file" ? mediaUrls[item.id] : item.url;
-              return <article className={`mood-card mood-${item.kind}`} key={item.id}>
-                <button className="media-remove" onClick={() => removeMedia(item)} aria-label={`Remove ${item.title}`}>×</button>
-                {item.kind === "image" && source && <img src={source} alt={item.title} />}
-                {item.kind === "video" && source && <video src={source} controls preload="metadata"><track kind="captions" src="data:text/vtt,WEBVTT" srcLang="en" label="Media reference" /></video>}
-                {item.kind === "audio" && <div className="mood-audio"><span>◉</span><small>SONIC REFERENCE</small>{source && <audio src={source} controls preload="metadata"><track kind="captions" src="data:text/vtt,WEBVTT" srcLang="en" label="Music reference" /></audio>}</div>}
-                {item.kind === "link" && <a className="mood-link" href={item.url} target="_blank" rel="noreferrer"><span>↗</span><small>WEB REFERENCE</small><strong>{item.url?.replace(/^https?:\/\//, "").split("/")[0]}</strong></a>}
-                <div className="mood-caption"><span className="media-kind">{item.kind}</span><h3>{item.title}</h3>{item.note && <p>{item.note}</p>}</div>
-              </article>;
-            })}</div> : <button className="mood-empty" onClick={() => setShowMedia(true)}><span className="mood-empty-mark">✳</span><strong>No references added</strong><small>Add images, videos, audio, or links for this project.</small><b>＋ Add first reference</b></button>}
+            <MoodboardCanvas key={project} items={projectMedia} sources={mediaUrls} onUpdate={(id, patch) => setMedia(current => current.map(item => item.id === id ? {...item, ...patch} : item))} onImages={addBoardImages} onText={(position) => { const id = nextBoardId(); setMedia(current => [...current, {id, project, kind:"link", source:"url", title:"Text note", note:"", createdAt:Date.now(), canvas:{...position,width:300,z:Math.max(0,...projectMedia.map(m => m.canvas?.z ?? 0))+1,text:true}}]); }} onRemove={item => { const full = media.find(m => m.id === item.id); if(full) void removeMedia(full); }} onReference={() => setShowMedia(true)} />
           </section> : <>
-          <div className="section-heading"><div><h2>{currentTitle}</h2><span className="muted">{view === "project" ? "Browse candidates, audition tracks, and arrange your tracklist." : view === "revisit" ? "Demos marked Unheard or Revisit, sorted oldest first." : "Filter, search, and sort your demos."}</span></div><span className="saved-note">{ready ? "✓ Changes saved locally" : "Loading your library…"}</span></div>
-          {view === "project" && project !== "Unsorted" ? <ProjectBuilder key={project} tracks={demos.filter((demo) => demo.project === project)} order={projectOrder} onOrder={setProjectOrder} onFavorite={toggleFavorite} onOpen={openDemo} statsFor={statsFor} audioUrl={(id) => apiUrl(`/api/audio/${id}`)} onAudition={(id) => { document.querySelectorAll("audio").forEach((audio) => { if (!audio.closest(".builder-preview")) audio.pause(); }); markDemoListened(id); }} /> : <div className={`workspace-grid ${view === "project" && project !== "Unsorted" ? "project-workspace" : ""}`}>
+          <div className="section-heading"><div><h2>{view === "project" ? "Arrange tracks" : "Demos"}</h2><span className="muted">{view === "project" ? "Browse candidates, audition tracks, and arrange your tracklist." : view === "revisit" ? "Demos marked Unheard or Revisit, sorted oldest first." : "Filter, search, and sort your demos."}</span></div><span className="saved-note">{ready ? "✓ Changes saved locally" : "Loading your library…"}</span></div>
+          {view === "project" && project !== "Unsorted" ? <ProjectBuilder key={project + ":" + (selectedTracklist?.id ?? "")} listName={selectedTracklist?.name ?? "Main tracklist"} tracks={demos.filter((demo) => demo.project === project)} order={projectOrder} onOrder={setProjectOrder} onFavorite={toggleFavorite} onOpen={openDemo} statsFor={statsFor} audioUrl={(id) => apiUrl(`/api/audio/${id}`)} onAudition={(id) => { document.querySelectorAll("audio").forEach((audio) => { if (!audio.closest(".builder-preview")) audio.pause(); }); markDemoListened(id); }} /> : <div className={`workspace-grid ${view === "project" && project !== "Unsorted" ? "project-workspace" : ""}`}>
           <div className="demo-panel" onDragOver={(event) => { if (view === "project") event.preventDefault(); }} onDrop={() => { if (view === "project") dropOnTracklist(); }}><div className="filter-row"><div className="filters">{["All", "Favourites", "Unheard", "Revisit", "Shaping", "Finished"].map((item) => <button key={item} onClick={() => { setStatsFilters([]); setFilter(item); }} className={filter === item ? "filter-active" : ""}>{item}</button>)}</div><div className="filter-tools"><select className="tag-select" value={tagFilter} onChange={(event) => { setStatsFilters([]); setTagFilter(event.target.value); }} aria-label="Filter by tag"><option>All tags</option>{tags.map((tag) => <option key={tag.name}>{tag.name}</option>)}</select>{view === "project" ? <span className="sort-button">↕ Drag to reorder</span> : <select className="sort-select" value={sortBy} onChange={(event) => setSortBy(event.target.value as typeof sortBy)} aria-label="Sort demos"><option value="score">Net score · highest</option><option value="upvote-rate">Upvote rate · highest</option><option value="least-listened">Unlistened first · fewest listens</option><option value="most-listened">Most listened</option><option value="updated">Recently updated</option><option value="created-new">Creation date · newest</option><option value="created-old">Creation date · oldest</option><option value="title">Title · A–Z</option></select>}</div></div>{view !== "project" && <div className="bulk-share-toolbar"><label><input type="checkbox" checked={visibleDemos.filter((demo) => demo.ownerId === account?.id).length > 0 && visibleDemos.filter((demo) => demo.ownerId === account?.id).every((demo) => selectedDemoIds.has(demo.id))} onChange={selectVisibleDemos} aria-label="Select all visible demos" /> Select visible</label><span>{selectedDemos.length ? `${selectedDemos.length} selected` : "Select demos to share"}</span><button type="button" className="secondary-button" disabled={!selectedDemos.length || !friends.length} onClick={openBulkShare}>Share selected</button></div>}<div className={`demo-table ${view !== "project" ? "demo-table-selectable" : ""}`}><div className="table-head">{view !== "project" && <span aria-hidden="true" /> }<span>{view === "project" ? "TRACK / DEMO" : "DEMO"}</span><span>DETAILS</span><span>STATUS</span><span>UPDATED</span><span /></div>{visibleDemos.map((demo, index) => <div className="demo-row-wrap" key={demo.id}>{view !== "project" && demo.ownerId === account?.id && <label className="demo-select"><input type="checkbox" checked={selectedDemoIds.has(demo.id)} onChange={() => toggleDemoSelection(demo.id)} aria-label={`Select ${demo.title}`} /></label>}<button draggable={view === "project"} onDragStart={() => setDraggedId(demo.id)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.stopPropagation(); dropOnTracklist(demo.id); }} onClick={() => openDemo(demo.id)} className={`demo-row ${selectedId === demo.id ? "row-selected" : ""}`}><span className="demo-name">{view === "project" && <b className="track-number">{String(index + 1).padStart(2, "0")}</b>}<span className={`cover cover-${demo.id % 4}`}><i /></span><span><strong>{demo.title}{demo.favorite && <i className="favorite-mark" aria-label="Favourite">★</i>}</strong><small>{demo.creationDate && <b className="date-tag">{formatCreationDate(demo.creationDate)}</b>}{demo.tags.join("  ·  ")}{demo.audioName ? "  ·  audio linked" : ""}</small></span></span><span className="details">{demo.bpm ? `${demo.bpm} BPM` : "BPM —"} <i>·</i> {demo.key} <i>·</i> {demo.duration} <i>·</i> <b className="vote-breakdown">↑{statsFor(demo.id).up} ↓{statsFor(demo.id).down} · {formatUpvoteRate(statsFor(demo.id))} · {demoListenCount(demo)} listens</b></span><span><b className={`status ${demo.status}`}>{statusLabels[demo.status]}</b></span><span className="updated">{relativeDate(demo.updatedAt)}</span><span className="row-arrow">→</span></button></div>)}</div>{visibleDemos.length === 0 && (view === "project" ? <div className="empty-state tracklist-empty">Drag candidates here to begin the tracklist.</div> : demos.length === 0 ? <div className="empty-state library-empty"><span>✳</span><strong>Your library is empty</strong><p>Choose a folder of demo bounces to start building your archive.</p><button onClick={openBulkImport}>＋ Import your demos</button></div> : <div className="empty-state">No demos match this view.</div>)}</div>
 
 
           </div>}</>}
-          <div className="bottom-note"><span className="spark">✳</span><span><strong>{revisitDemos.length} demos in the review queue.</strong> Sorted by oldest update.</span><button onClick={() => { setStatsFilters([]); setView("revisit"); setProject("All demos"); }}>Open revisit queue →</button></div>
+          {view === "library" && <div className="bottom-note"><span className="spark">✳</span><span><strong>{revisitDemos.length} demos in the review queue.</strong> Sorted by oldest update.</span><button onClick={() => { setStatsFilters([]); setView("revisit"); setProject("All demos"); }}>Open revisit queue →</button></div>}
           </>}
         </div>
       </section>
