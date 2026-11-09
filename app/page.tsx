@@ -6,10 +6,11 @@ import QRCode from "qrcode";
 import DemoSearch from "./demo-search";
 import ProjectTracklists, { type TracklistVersion } from "./project-tracklists";
 import ProjectBuilder from "./project-builder";
+import DemoTasks, { type Task } from "./demo-tasks";
 import MoodboardCanvas, { type CanvasPosition } from "./moodboard-canvas";
 import SetImport, { type SetPlan } from "./set-import";
 import DemoFiles from "./demo-files";
-import { archiveProject } from "./set-files";
+import { archiveProject, setFingerprint, setRelativePath } from "./set-files";
 
 type Status = "unheard" | "revisit" | "shaping" | "finished";
 type Demo = {
@@ -67,7 +68,7 @@ type ProjectMedia = {
   url?: string;
   createdAt: number;
 };
-type View = "projects" | "import" | "tools" | "demo" | "search" | "library" | "revisit" | "project" | "stats" | "feedback" | "sharing";
+type View = "tasks" | "projects" | "import" | "tools" | "demo" | "search" | "library" | "revisit" | "project" | "stats" | "feedback" | "sharing";
 type FeedbackFilter = "all" | "ratings" | "notes";
 type FeedbackItem = {
   id: string; kind: "rating" | "note"; demoId: number; demoTitle: string; authorName: string;
@@ -725,6 +726,10 @@ function ProjectTrackFeedback({ demo, account, listens, onVote }: { demo: Demo; 
   </section>;
 }
 
+async function taskFromFeedback(demoUuid: string, body: string, sourceId: string, sourceLabel: string) {
+  try { await saveQueue; await apiRequest("/api/tasks", {method:"POST", body:JSON.stringify({demoUuid,body,sourceId,sourceLabel})}); window.dispatchEvent(new Event("demolition-tasks")); window.alert("Task added to Work on next."); } catch(e) { window.alert(e instanceof Error ? e.message : "Could not create task."); }
+}
+
 function TrackDiscussion({ demo }: { demo: Demo }) {
   const [comments, setComments] = useState<TrackComment[]>([]);
   const [reply, setReply] = useState<TrackComment>();
@@ -752,7 +757,7 @@ function TrackDiscussion({ demo }: { demo: Demo }) {
   }
   function thread(comment: TrackComment, ancestors: string[] = []): React.ReactNode {
     if (ancestors.includes(comment.uuid)) return null;
-    return <li key={comment.uuid}><article><header><strong>{comment.authorName}</strong><time>{new Date(comment.createdAt).toLocaleString()}</time>{comment.stance !== "comment" && <span>{comment.stance === "agree" ? "Agrees" : "Disagrees"}</span>}</header><p>{comment.body}</p><button type="button" className="text-button" onClick={() => { setReply(comment); setStance("comment"); }}>Reply</button></article><ul>{comments.filter((item) => item.parentUuid === comment.uuid).map((item) => thread(item, [...ancestors, comment.uuid]))}</ul></li>;
+    return <li key={comment.uuid}><article><header><strong>{comment.authorName}</strong><time>{new Date(comment.createdAt).toLocaleString()}</time>{comment.stance !== "comment" && <span>{comment.stance === "agree" ? "Agrees" : "Disagrees"}</span>}</header><p>{comment.body}</p><button type="button" className="text-button" onClick={() => { setReply(comment); setStance("comment"); }}>Reply</button><button className="text-button" onClick={() => void taskFromFeedback(demo.uuid, comment.body, "comment:"+comment.uuid, "Comment by "+comment.authorName)}>Create task</button></article><ul>{comments.filter((item) => item.parentUuid === comment.uuid).map((item) => thread(item, [...ancestors, comment.uuid]))}</ul></li>;
   }
   return <section className="track-discussion" aria-label="Track discussion"><h2>Discussion · {demo.title}</h2><p>Comments and replies are exchanged when friends sync.</p><ul>{comments.filter((item) => !item.parentUuid || !comments.some((parent) => parent.uuid === item.parentUuid)).map((item) => thread(item))}</ul>{!comments.length && <p>No comments yet.</p>}<form onSubmit={submit}>{reply && <p>Replying to {reply.authorName}: {reply.body.slice(0, 100)} <button type="button" className="text-button" onClick={() => setReply(undefined)}>Cancel reply</button></p>}<label>Comment<textarea value={body} maxLength={5000} rows={3} onChange={(event) => setBody(event.target.value)} required /></label>{reply && <label>Response<select value={stance} onChange={(event) => setStance(event.target.value)}><option value="comment">Comment</option><option value="agree">Agree</option><option value="disagree">Disagree</option></select></label>}<button className="primary-button" disabled={posting || !body.trim()}>{posting ? "Posting…" : reply ? "Post reply" : "Post comment"}</button>{error && <p role="alert">{error}</p>}</form></section>;
 }
@@ -881,12 +886,12 @@ export default function Home() {
   const rapidAudioCacheRef = useRef(new Map<number, RapidAudioEntry>());
   const rapidAudioFetchesRef = useRef(new Map<number, Promise<RapidAudioEntry | undefined>>());
   const rapidAudioSessionRef = useRef(0);
-  const rapidActionsRef = useRef({ previous: () => undefined, next: () => undefined, down: () => undefined, up: () => undefined });
+  const rapidActionsRef = useRef<Record<"previous" | "next" | "down" | "up", () => void>>({ previous: () => undefined, next: () => undefined, down: () => undefined, up: () => undefined });
   const remoteCommandActionsRef = useRef<(command: RemoteCommand) => void>(() => undefined);
   const remoteLastCommandRef = useRef(0);
   const remoteStateRef = useRef<RemotePlaybackState | undefined>(undefined);
   const activeFilenameConflict = pendingBulkImport?.conflicts[0];
-  const conflictExistingDemo = activeFilenameConflict?.existing.kind === "demo" ? demos.find((demo) => demo.id === activeFilenameConflict.existing.demoId) : undefined;
+  const conflictExistingDemo = activeFilenameConflict?.existing.kind === "demo" ? demos.find((demo) => demo.id === (activeFilenameConflict.existing.kind === "demo" ? activeFilenameConflict.existing.demoId : undefined)) : undefined;
   const conflictExistingIncoming = activeFilenameConflict?.existing.kind === "incoming" ? activeFilenameConflict.existing.audio : undefined;
 
   useEffect(() => {
@@ -1453,7 +1458,7 @@ export default function Home() {
   const rapidQuickTags = rapidDemo ? <section className="rapid-tags" aria-label="Track tags"><div className="rapid-tags-head"><span>TAGS</span><small>Tap to apply or remove</small></div><div className="rapid-tag-list">{rapidTagOptions.map((tag) => { const selected = rapidDemo.tags.some((name) => name.toLocaleLowerCase() === tag.name.toLocaleLowerCase()); return <button key={tag.name} className={selected ? "selected" : ""} aria-pressed={selected} onClick={() => toggleRapidTag(tag.name)}><span>{selected ? "✓" : "+"}</span>{tag.name}</button>; })}{rapidTagOptions.length === 0 && <small>No tags created yet.</small>}</div><form className="rapid-tag-create" onSubmit={createAndApplyRapidTag}><input name="tag" aria-label="New tag" placeholder="New tag" autoComplete="off" /><button type="submit">Add</button></form></section> : null;
   const selectedListenHistory = selectedListens.length > 0 ? <div className="listen-history"><span className="eyebrow">RECENT LISTENS</span>{selectedListens.map((listen) => <div className={`listen-event ${listen.verdict}`} key={listen.eventUuid || listen.id}><b>{listen.verdict === "up" ? "↑" : "↓"}</b><span><i>{listen.authorId === account?.id ? "You" : listen.authorName}</i>{listen.note || "No note"}<small>{new Date(listen.listenedAt).toLocaleDateString("en-AU")}</small></span></div>)}</div> : null;
   const selectedScoreBreakdown = selectedScoresByPerson.length > 0 ? <div className="score-by-person"><span className="eyebrow">SCORE BY LISTENER</span>{selectedScoresByPerson.map((person) => <div key={person.id}><strong>{person.name}</strong><span>{person.up} up · {person.down} down</span><b>{person.score > 0 ? `+${person.score}` : person.score}</b></div>)}</div> : null;
-  const selectedTimedNoteHistory = selectedTimedNotes.length > 0 ? <div className="timed-note-history"><span className="eyebrow">TIMED NOTES</span>{selectedTimedNotes.map((note) => <div className={`timed-note-history-row ${selectedActiveNoteUuids.has(note.noteUuid) ? "active" : ""}`} key={note.noteUuid}><button className="timed-note-jump" onClick={() => seekTimedNote(note)}><b>{formatDuration(note.startSeconds)}–{formatDuration(note.endSeconds)}</b><span><i>{note.authorId === account?.id ? "You" : note.authorName}</i>{note.note}</span></button>{note.authorId === account?.id && <div className="timed-note-actions"><button onClick={() => editTimedNote(note)}>Edit</button><button onClick={() => deleteTimedNote(note)}>Delete</button></div>}</div>)}</div> : null;
+  const selectedTimedNoteHistory = selectedTimedNotes.length > 0 ? <div className="timed-note-history"><span className="eyebrow">TIMED NOTES</span>{selectedTimedNotes.map((note) => <div className={`timed-note-history-row ${selectedActiveNoteUuids.has(note.noteUuid) ? "active" : ""}`} key={note.noteUuid}><button className="timed-note-jump" onClick={() => seekTimedNote(note)}><b>{formatDuration(note.startSeconds)}–{formatDuration(note.endSeconds)}</b><span><i>{note.authorId === account?.id ? "You" : note.authorName}</i>{note.note}</span></button><button className="text-button" onClick={() => void taskFromFeedback(note.demoUuid, note.note, "note:"+note.noteUuid, `Timed note by ${note.authorName} · ${formatDuration(note.startSeconds)}–${formatDuration(note.endSeconds)}`)}>Create task</button>{note.authorId === account?.id && <div className="timed-note-actions"><button onClick={() => editTimedNote(note)}>Edit</button><button onClick={() => deleteTimedNote(note)}>Delete</button></div>}</div>)}</div> : null;
   const selectedSharing = selected && account ? selected.ownerId === account.id
     ? <div className="detail-section sharing-section"><div className="detail-section-head"><span>SHARED WITH</span><button onClick={() => setShowAccount(true)}>manage</button></div><div className="share-friends">{friends.map((friend) => { const direct = shares.some((share) => share.demoUuid === selected.uuid && share.friendId === friend.id); const inherited = projectShares.some((share) => share.project === selected.project && share.friendId === friend.id); const active = direct || inherited; return <button key={friend.id} className={active ? "shared" : ""} disabled={inherited} title={inherited ? `Shared through ${selected.project}` : undefined} onClick={() => toggleDemoShare(selected, friend.id)}><span>{active ? "✓" : "+"}</span>{friend.displayName}{inherited ? <small>project</small> : null}</button>; })}{friends.length === 0 && <small>No friends connected.</small>}</div></div>
     : <div className="detail-section remote-source"><div className="detail-section-head"><span>SHARED BY</span></div><p>{friends.find((friend) => friend.id === selected.ownerId)?.displayName || "Friend"}</p></div> : null;
@@ -1771,6 +1776,7 @@ export default function Home() {
     if (!ready || !account) throw new Error("Wait for the library to load.");
     const known = [...demos];
     let completed = 0;
+    const results = [];
     for (const plan of plans) {
       const { set } = plan;
       try {
@@ -1798,8 +1804,11 @@ export default function Home() {
           const i = known.findIndex((d) => d.id === demo.id);
           if (i < 0) known.push(demo); else known[i] = demo;
         }
+        plan.target = String(demo.id);
         const endpoint = `/api/demos/${encodeURIComponent(demo.uuid)}/attachments`;
-        const version = await apiRequest<{ id: string }>(`/api/demos/${encodeURIComponent(demo.uuid)}/file-versions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ label: set.name + " · " + new Date().toLocaleString(), notes: "Imported set folder: " + set.name }) });
+        progress(`${set.name}: verifying import contents…`);
+        const importKey = await setFingerprint(set) + ":" + (demo.checksum || "");
+        const version = await apiRequest<{ id: string }>(`/api/demos/${encodeURIComponent(demo.uuid)}/file-versions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ importKey, label: (set.name + " · " + new Date().toLocaleString()).slice(0,100), notes: "Imported set folder: " + set.name }) });
         let attached = await apiRequest<Attachment[]>(endpoint);
         async function attach(file: File, name: string, kind: string) {
           progress(`${set.name}: ${name}`);
@@ -1811,13 +1820,15 @@ export default function Home() {
           }
           attached = await apiRequest<Attachment[]>(`${endpoint}?kind=${kind}&version=${version.id}`, { method: "POST", headers: { "content-type": "application/octet-stream", "x-file-name": encodeURIComponent(name) }, body: file });
         }
-        for (const file of set.stems) await attach(file, file.webkitRelativePath.split("/").slice(bulk ? 3 : 2).join(" · "), "stem");
+        for (const file of set.stems) await attach(file, setRelativePath(file).replaceAll("/", " · "), "stem");
         if (set.project.length) { const zip = await archiveProject(set, bulk); await attach(zip, zip.name, "project"); }
+        results.push({id:demo.id, uuid:demo.uuid, title:demo.title, versionId:version.id, master:demo.audioName || "No master", stems:set.stems.length, projectFiles:set.project.length});
         completed++;
-      } catch (e) { throw new Error(`${completed} sets completed. ${set.name}: ${e instanceof Error ? e.message : "Import failed"}. Copies already saved are kept. Close and select the folder again to re-match before retrying.`); }
+      } catch (e) { throw new Error(`${completed} sets completed. ${set.name}: ${e instanceof Error ? e.message : "Import failed"}. Copies already saved are kept. Retry to continue with these files. Already saved, identical copies will be skipped. After a page reload, reselect the same folder and destination.`); }
       finally { setAttachmentRevision((n) => n + 1); }
     }
     refreshStorageInfo().catch(() => undefined);
+    return results;
   }
 
   async function attachAudio(event: React.ChangeEvent<HTMLInputElement>) {
@@ -2525,7 +2536,7 @@ export default function Home() {
     let timer = 0;
     async function publishAndPoll() {
       try {
-        const session = await apiRequest<RemoteSession>(`/api/remote/sessions/${encodeURIComponent(token)}`, { method: "PUT", body: JSON.stringify({ state: remoteStateRef.current || { active: false }, afterSequence: remoteLastCommandRef.current }) });
+        const session = await apiRequest<RemoteSession>(`/api/remote/sessions/${encodeURIComponent(token!)}`, { method: "PUT", body: JSON.stringify({ state: remoteStateRef.current || { active: false }, afterSequence: remoteLastCommandRef.current }) });
         if (!active) return;
         setRemoteSession(session);
         setRemoteStatus("");
@@ -2872,8 +2883,9 @@ export default function Home() {
     setShowBulkShare(false);
   }
 
-  function exportBackup() {
-    const payload = JSON.stringify({ version: 8, exportedAt: new Date().toISOString(), demos, projects, tags, orders, media, listens, timedNotes, shares, projectShares }, null, 2);
+  async function exportBackup() {
+    let tasks: Task[]; try { tasks = await apiRequest<Task[]>("/api/tasks"); } catch { window.alert("Could not load tasks; backup was not exported. Please retry."); return; }
+    const payload = JSON.stringify({ tasks, version: 9, exportedAt: new Date().toISOString(), demos, projects, tags, orders, media, listens, timedNotes, shares, projectShares }, null, 2);
     const url = URL.createObjectURL(new Blob([payload], { type: "application/json" }));
     const anchor = document.createElement("a");
     anchor.href = url;
@@ -2888,7 +2900,7 @@ export default function Home() {
     try {
       const data = JSON.parse(await file.text());
       if (!Array.isArray(data.demos) || !Array.isArray(data.projects)) throw new Error("Invalid backup");
-      const restoredDemos = data.demos.map((demo: Demo) => ({ ...demo, uuid: demo.uuid || crypto.randomUUID(), ownerId: demo.ownerId || account?.id || "" }));
+      const restoredDemos: Demo[] = data.demos.map((demo: Demo) => ({ ...demo, uuid: demo.uuid || crypto.randomUUID(), ownerId: demo.ownerId || account?.id || "" }));
       const demosById = new Map(restoredDemos.map((demo: Demo) => [demo.id, demo]));
       const restoredListens = (Array.isArray(data.listens) ? data.listens : []).map((listen: ListenEvent) => ({
         ...listen, eventUuid: listen.eventUuid || crypto.randomUUID(), demoUuid: listen.demoUuid || demosById.get(listen.demoId)?.uuid || "",
@@ -2899,6 +2911,9 @@ export default function Home() {
         authorId: note.authorId || account?.id || "", authorName: note.authorName || account?.displayName || "Owner", signature: note.authorId ? note.signature : undefined,
       }));
       const restoredTags = mergeTags(Array.isArray(data.tags) ? data.tags : [], restoredDemos.flatMap((demo: Demo) => demo.tags));
+      await saveQueue;
+      await apiRequest("/api/state", {method:"PUT",body:JSON.stringify({...data,demos:restoredDemos,listens:restoredListens,timedNotes:restoredTimedNotes})});
+      window.dispatchEvent(new Event("demolition-tasks"));
       setDemos(restoredDemos); setProjects(data.projects); setTags(restoredTags); setOrders(data.orders ?? {}); setMedia(data.media ?? []); setListens(restoredListens); setTimedNotes(restoredTimedNotes); setShares(data.shares ?? []); setProjectShares(data.projectShares ?? []);
       setSelectedId(restoredDemos[0]?.id ?? 1); setProject("All demos"); setView("library");
     } catch { window.alert("That file is not a valid Demolition backup."); }
@@ -2923,7 +2938,7 @@ export default function Home() {
     closeMobileMenu(); setSearch(""); setTagFilter("All tags"); setStatsFilters([]); setProject("All demos"); setFilter("All"); setView(next); window.scrollTo(0, 0);
   }
 
-  const currentTitle = view === "projects" ? "Projects" : view === "import" ? "Import demos" : view === "tools" ? "Library management" : view === "demo" ? selected?.title || "Demo not found" : view === "search" ? "Search demos" : view === "feedback" ? "Friend feedback" : view === "sharing" ? "Sharing" : view === "stats" ? "Stats overview" : view === "revisit" ? "Revisit queue" : view === "project" ? project : "Demo library";
+  const currentTitle = view === "tasks" ? "Work on next" : view === "projects" ? "Projects" : view === "import" ? "Import demos" : view === "tools" ? "Library management" : view === "demo" ? selected?.title || "Demo not found" : view === "search" ? "Search demos" : view === "feedback" ? "Friend feedback" : view === "sharing" ? "Sharing" : view === "stats" ? "Stats overview" : view === "revisit" ? "Revisit queue" : view === "project" ? project : "Demo library";
 
   if (remoteToken) return <PhoneRemote token={remoteToken} />;
 
@@ -2942,6 +2957,7 @@ export default function Home() {
             <button className={`nav-item ${view === "projects" || view === "project" ? "active" : ""}`} aria-current={view === "projects" || view === "project" ? "page" : undefined} onClick={() => navigateWorkspace("projects")}><span>☷</span> Projects <b>{projects.length}</b></button>
             <button className={`nav-item ${view === "stats" ? "active" : ""}`} aria-current={view === "stats" ? "page" : undefined} onClick={() => navigateWorkspace("stats")}><span>▥</span> Statistics</button>
           </nav>
+          <button className={`nav-item ${view === "tasks" ? "active" : ""}`} onClick={() => navigateWorkspace("tasks")}>☑ Work on next</button>
           <div className="sidebar-label nav-group-label">Collaboration</div>
           <nav className="main-nav" aria-label="Collaboration navigation">
             <button onClick={openFeedback} className={`nav-item ${view === "feedback" ? "active" : ""}`} aria-current={view === "feedback" ? "page" : undefined}><span>↯</span> Feedback <b>{unreadFeedbackCount || feedbackItems.length}</b></button>
@@ -2973,7 +2989,7 @@ export default function Home() {
           {statsFilters.length > 0 && view !== "stats" && <div className="stats-filter-notice" role="status"><span>FILTER</span><div className="stats-filter-copy"><p><strong>{statsFilteredDemos.length}</strong> matching demos from the statistics view.</p><div className="stats-filter-chips">{statsFilters.map((activeFilter) => <button type="button" className="stats-filter-chip" key={`${activeFilter.type}-${activeFilter.value}`} onClick={() => setStatsFilters(statsFilters.filter((filter) => filter !== activeFilter))} aria-label={`Remove ${activeFilter.label} filter`}>{activeFilter.label} ×</button>)}</div></div><button className="stats-filter-listen" disabled={!statsAuditionDemos.length} onClick={() => startRapidListen(statsAuditionDemos)}>{statsAuditionDemos.length ? `▶ Listen to ${statsAuditionDemos.length}` : statsFilteredDemos.length ? "No local audio" : "No matches"}</button><button onClick={() => setStatsFilters([])}>Clear all ×</button></div>}
 
 
-          {view === "projects" ? <section className="workspace-cards" aria-label="Projects">
+          {view === "tasks" ? <DemoTasks demos={demos} request={options => apiRequest<Task[]>("/api/tasks", options)} onOpen={uuid => { const demo = demos.find(d => d.uuid === uuid); if(demo) openDemo(demo.id); }} /> : view === "projects" ? <section className="workspace-cards" aria-label="Projects">
             {projects.map((item) => <button className="workspace-card project-card" key={item.name} onClick={() => { setProjectTab("tracklist"); selectProject(item.name); }}><span className="eyebrow">PROJECT</span><h2>{item.name}</h2><p>{demos.filter((d) => d.project === item.name).length} demos · {(item.tracklists?.length ?? 0) + 1} tracklists</p><span className="card-link">Open project →</span></button>)}
             {!projects.length && <article className="workspace-card"><h2>No projects yet</h2><p>Create a project to group demos and try different track orders.</p><button className="primary-button" onClick={() => setShowProject(true)}>New project</button></article>}
             <button className="workspace-card project-card" onClick={() => { setProjectTab("tracklist"); selectProject("Unsorted"); }}><span className="eyebrow">UNASSIGNED</span><h2>Unsorted demos</h2><p>{demos.filter((d) => d.project === "Unsorted").length} demos not assigned to a project</p><span className="card-link">Browse demos →</span></button>
@@ -2992,6 +3008,7 @@ export default function Home() {
             <section hidden={demoTab !== "files"} className="demo-detail-imports" aria-label="Upload demo files"><div><h2>Upload files</h2><p>Attach the master, stems or project files to this demo.</p></div><div className="demo-detail-actions"><label className="secondary-button">{selected.audioName ? "Replace master audio" : "Upload master audio"}<input ref={attachRef} type="file" accept="audio/*,.wav,.aif,.aiff,.mp3,.m4a,.flac" onChange={attachAudio} /></label>{account?.id === selected.ownerId && <SetImport key={`set-${selected.uuid}`} demos={[selected]} single={selected} onImport={importSets} audioUrl={(id) => apiUrl(`/api/audio/${id}`)} />}</div><p>{selected.audioName || "No master attached"}</p></section>
             <div hidden={demoTab !== "overview" && demoTab !== "files"} className={demoTab === "overview" ? "demo-playback-only" : ""}><DemoAttachments key={`attachments-${selected.uuid}`} demo={selected} revision={attachmentRevision} /></div>
             <div className="demo-detail-columns" hidden={demoTab !== "overview" && demoTab !== "sharing"}><section hidden={demoTab !== "overview"} className="track-discussion"><h2>Notes & next action</h2><p className="demo-note-text">{selected.note || "No notes yet."}</p><p>{selected.nextAction || "No next action set."}</p><button className="secondary-button" onClick={openEdit}>Edit details, tags and notes</button><button className="secondary-button" disabled={detectingId === selected.id} onClick={detectSelectedBpm}>{detectingId === selected.id ? "Detecting BPM…" : "Detect BPM"}</button></section><section hidden={demoTab !== "sharing"} className="track-discussion"><h2>Sharing</h2>{selectedSharing}</section></div>
+            <div hidden={demoTab !== "overview"}><DemoTasks key={selected.uuid} demoUuid={selected.uuid} demos={demos} request={options => apiRequest<Task[]>("/api/tasks", options)} onOpen={() => undefined} /></div>
             <div hidden={demoTab !== "feedback"}><TrackDiscussion key={selected.uuid} demo={selected} /></div>
             <details hidden={demoTab !== "feedback"} className="track-discussion" open><summary>Ratings and timed notes</summary>{selectedScoreBreakdown}{selectedListenHistory}{selectedTimedNoteHistory}</details>
             <details hidden={demoTab !== "files"} className="track-discussion"><summary>Storage & removal</summary>{playbackError && <p role="alert">{playbackError}</p>}{audioUrl && <button className="secondary-button" onClick={removeSelectedAudioCopy}>Remove master copy</button>}{demoRemoval}</details>
@@ -3164,7 +3181,7 @@ export default function Home() {
         </section>
       </div>}
 
-      {showBulk && <div className="modal-backdrop"><form className="modal bulk-modal" onSubmit={bulkImport}><button type="button" className="modal-close" disabled={/^(Checking|Analyzing)/.test(bulkProgress)} onClick={() => setShowBulk(false)}>×</button><div className="eyebrow">BULK IMPORT</div><h2>Import audio files</h2><p>Select a folder or choose several audio files. Every imported demo can receive the same batch tags.</p><div className="source-safety"><span>✓</span><div><strong>Your source files are read-only</strong><small>Demolition creates app-managed local copies. It cannot rename, overwrite, or delete anything in the selected folder.</small></div></div><div className="bulk-choices"><label className="file-drop bulk-choice"><span className="bulk-icon">▤</span><strong>Choose a folder</strong><small>Audio from all subfolders · other files ignored</small><input name="folder" type="file" accept="audio/*,.wav,.aif,.aiff,.mp3,.m4a,.flac,.ogg,.opus,.aac" multiple webkitdirectory="" /></label><label className="file-drop bulk-choice"><span className="bulk-icon">♪</span><strong>Choose audio files</strong><small>Select multiple files</small><input name="files" type="file" accept="audio/*,.wav,.aif,.aiff,.mp3,.m4a,.flac,.ogg,.opus,.aac" multiple /></label></div><label>Destination<select name="project" defaultValue={project !== "All demos" && project !== "Unsorted" ? project : projects[0]?.name ?? "Unsorted"}>{projectNames.map((name) => <option key={name}>{name}</option>)}</select></label><label>Batch tags<input name="tags" list="known-tags" placeholder="e.g. April exports, laptop sessions" /><span className="field-hint">Comma separated · applied to every file in this import</span></label>{bulkProgress && <div className={`bulk-progress ${bulkProgress.startsWith("No ") || bulkProgress.startsWith("Not ") || bulkProgress.startsWith("Nothing ") || bulkProgress.startsWith("Import stopped") ? "bulk-error" : ""}`}><span /><p>{bulkProgress}</p></div>}<button className="primary-button modal-submit" disabled={/^(Checking|Analyzing)/.test(bulkProgress)} type="submit">{/^(Checking|Analyzing)/.test(bulkProgress) ? "Checking and analyzing…" : "Import safe copies"} <span>→</span></button><small className="bulk-privacy">Only Demolition&apos;s managed copies can be removed from this app.</small></form></div>}
+      {showBulk && <div className="modal-backdrop"><form className="modal bulk-modal" onSubmit={bulkImport}><button type="button" className="modal-close" disabled={/^(Checking|Analyzing)/.test(bulkProgress)} onClick={() => setShowBulk(false)}>×</button><div className="eyebrow">BULK IMPORT</div><h2>Import audio files</h2><p>Select a folder or choose several audio files. Every imported demo can receive the same batch tags.</p><div className="source-safety"><span>✓</span><div><strong>Your source files are read-only</strong><small>Demolition creates app-managed local copies. It cannot rename, overwrite, or delete anything in the selected folder.</small></div></div><div className="bulk-choices"><label className="file-drop bulk-choice"><span className="bulk-icon">▤</span><strong>Choose a folder</strong><small>Audio from all subfolders · other files ignored</small><input name="folder" type="file" accept="audio/*,.wav,.aif,.aiff,.mp3,.m4a,.flac,.ogg,.opus,.aac" multiple {...{ webkitdirectory: "" }} /></label><label className="file-drop bulk-choice"><span className="bulk-icon">♪</span><strong>Choose audio files</strong><small>Select multiple files</small><input name="files" type="file" accept="audio/*,.wav,.aif,.aiff,.mp3,.m4a,.flac,.ogg,.opus,.aac" multiple /></label></div><label>Destination<select name="project" defaultValue={project !== "All demos" && project !== "Unsorted" ? project : projects[0]?.name ?? "Unsorted"}>{projectNames.map((name) => <option key={name}>{name}</option>)}</select></label><label>Batch tags<input name="tags" list="known-tags" placeholder="e.g. April exports, laptop sessions" /><span className="field-hint">Comma separated · applied to every file in this import</span></label>{bulkProgress && <div className={`bulk-progress ${bulkProgress.startsWith("No ") || bulkProgress.startsWith("Not ") || bulkProgress.startsWith("Nothing ") || bulkProgress.startsWith("Import stopped") ? "bulk-error" : ""}`}><span /><p>{bulkProgress}</p></div>}<button className="primary-button modal-submit" disabled={/^(Checking|Analyzing)/.test(bulkProgress)} type="submit">{/^(Checking|Analyzing)/.test(bulkProgress) ? "Checking and analyzing…" : "Import safe copies"} <span>→</span></button><small className="bulk-privacy">Only Demolition&apos;s managed copies can be removed from this app.</small></form></div>}
 
       {showBulkShare && <div className="modal-backdrop"><form className="modal bulk-share-modal" onSubmit={applyBulkShare}><button type="button" className="modal-close" onClick={() => setShowBulkShare(false)}>×</button><div className="eyebrow">{bulkShareMode === "revoke" ? "REVOKE ACCESS" : "SHARE DEMOS"}</div><h2>{selectedDemos.length} selected</h2><p>{bulkShareMode === "revoke" ? "Choose which friends should lose direct access to these demos. They will disappear from the friend instance after its next sync." : "Choose which friends should receive these demos. Clearing a friend revokes their access; the change takes effect when they sync."}</p><div className="bulk-share-actions"><button type="button" className="text-button" onClick={() => setBulkShareFriendIds(friends.map((friend) => friend.id))}>Select all</button><button type="button" className="text-button" onClick={() => setBulkShareFriendIds([])}>Clear all</button></div><div className="bulk-share-friends">{friends.map((friend) => { const sharedCount = selectedDemos.filter((demo) => shares.some((share) => share.demoUuid === demo.uuid && share.friendId === friend.id)).length; return <label key={friend.id} aria-label={`${bulkShareMode === "revoke" ? "Revoke selected demos from" : "Share selected demos with"} ${friend.displayName}`}><input type="checkbox" checked={bulkShareFriendIds.includes(friend.id)} onChange={() => setBulkShareFriendIds((current) => current.includes(friend.id) ? current.filter((id) => id !== friend.id) : [...current, friend.id])} /><span><strong>{friend.displayName}</strong><small>{sharedCount === selectedDemos.length ? "Shared with all selected" : sharedCount ? `${sharedCount} of ${selectedDemos.length} already shared` : "Not shared yet"}</small></span></label>; })}{friends.length === 0 && <small>No connected friends.</small>}</div>{bulkShareProgress && <div className="mesh-progress">{bulkShareProgress}</div>}<button className={`primary-button modal-submit ${bulkShareMode === "revoke" ? "revoke-submit" : ""}`} type="submit">{bulkShareMode === "revoke" ? "Revoke access" : "Apply sharing"} <span>→</span></button></form></div>}
 

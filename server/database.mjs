@@ -23,7 +23,7 @@ export function listFileVersions(uuid) {
   return database.prepare("SELECT * FROM demo_file_versions WHERE demo_uuid = ? ORDER BY created_at DESC, id").all(uuid);
 }
 export function saveFileVersion(id, uuid, label, notes = "") {
-  database.prepare("INSERT INTO demo_file_versions VALUES (?, ?, ?, ?, ?)").run(id, uuid, String(label).slice(0, 100), String(notes).slice(0, 5000), Date.now());
+  database.prepare("INSERT INTO demo_file_versions (id, demo_uuid, label, notes, created_at) VALUES (?, ?, ?, ?, ?)").run(id, uuid, String(label).slice(0, 100), String(notes).slice(0, 5000), Date.now());
 }
 export function updateFileVersion(id, label, notes) {
   database.prepare("UPDATE demo_file_versions SET label = ?, notes = ? WHERE id = ?").run(String(label).slice(0, 100), String(notes).slice(0, 5000), id);
@@ -55,6 +55,7 @@ export function removeDemo(uuid) {
     }
     database.prepare("DELETE FROM demo_shares WHERE demo_uuid = ?").run(uuid);
     database.prepare("DELETE FROM track_comments WHERE demo_uuid = ?").run(uuid);
+    database.prepare("DELETE FROM demo_tasks WHERE demo_uuid = ?").run(uuid);
     database.prepare("DELETE FROM demo_attachments WHERE demo_uuid = ?").run(uuid);
     database.prepare("DELETE FROM demo_file_versions WHERE demo_uuid = ?").run(uuid);
     removeStoredFile("audio", demo.id);
@@ -338,6 +339,27 @@ function normalizeCanvas(value) {
   return { x: bounded(value.x, 40, 0, 100000), y: bounded(value.y, 40, 0, 100000),
     width: bounded(value.width, 300, 180, 600), z: bounded(value.z, 0, 0, 1000000), text: value.text === true };
 }
+
+database.exec("CREATE TABLE IF NOT EXISTS demo_tasks (id TEXT PRIMARY KEY, demo_uuid TEXT NOT NULL, body TEXT NOT NULL, source_id TEXT, source_label TEXT NOT NULL DEFAULT '', done INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL)");
+export function listTasks() {
+  return database.prepare("SELECT * FROM demo_tasks WHERE demo_uuid IN (SELECT uuid FROM demos) ORDER BY done, created_at").all();
+}
+export function saveTask(input) {
+  const demo = demoByUuid(input.demoUuid);
+  if (!demo || demo.owner_id !== getAccount().id) throw new Error("Tasks require a locally owned demo");
+  if (typeof input.body !== "string" || !input.body.trim() || input.body.length > 5000) throw new Error("Task text must be 1–5000 characters");
+  const existing = input.sourceId && database.prepare("SELECT id FROM demo_tasks WHERE demo_uuid = ? AND source_id = ?").get(input.demoUuid, String(input.sourceId));
+  if (!existing) database.prepare("INSERT INTO demo_tasks (id,demo_uuid,body,source_id,source_label,created_at) VALUES (?,?,?,?,?,?)").run(randomUUID(), input.demoUuid, input.body.trim(), input.sourceId ? String(input.sourceId).slice(0,200) : null, String(input.sourceLabel || "").slice(0,300), Date.now());
+  return listTasks();
+}
+export function completeTask(input) {
+  if (typeof input.done !== "boolean") throw new Error("Invalid task status");
+  database.prepare("UPDATE demo_tasks SET done = ? WHERE id = ? AND demo_uuid IN (SELECT uuid FROM demos WHERE owner_id = ?)").run(Number(input.done), input.id, getAccount().id);
+  return listTasks();
+}
+
+if (!database.prepare("PRAGMA table_info(demo_file_versions)").all().some(column => column.name === "import_key")) database.exec("ALTER TABLE demo_file_versions ADD COLUMN import_key TEXT");
+export function markImportVersion(id, key) { database.prepare("UPDATE demo_file_versions SET import_key = ? WHERE id = ?").run(key, id); }
 
 function createOwner() {
   const existing = database.prepare("SELECT * FROM owner_identity LIMIT 1").get();
@@ -712,6 +734,11 @@ export function writeWorkspace(payload) {
     }
     for (const project of projects) {
       if (project.tracklists !== undefined) saveTracklistVersions(project.name, project.tracklists);
+    }
+    if (Array.isArray(payload.tasks)) for (const task of payload.tasks) {
+      const demo = demoByUuid(task.demo_uuid);
+      if (!demo || demo.owner_id !== owner.id || typeof task.body !== "string" || !task.body.trim() || task.body.length > 5000) continue;
+      database.prepare("INSERT OR IGNORE INTO demo_tasks (id,demo_uuid,body,source_id,source_label,done,created_at) VALUES (?,?,?,?,?,?,?)").run(String(task.id || randomUUID()),demo.uuid,task.body,task.source_id ? String(task.source_id).slice(0,200) : null,String(task.source_label || "").slice(0,300),Number(Boolean(task.done)),Number(task.created_at)||Date.now());
     }
     database.exec("DELETE FROM project_tracklist_versions WHERE project NOT IN (SELECT name FROM projects)");
     database.exec("COMMIT");

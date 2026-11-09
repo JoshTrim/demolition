@@ -15,12 +15,31 @@ async function importTestModule(name) {
   return import("data:text/javascript;base64," + Buffer.from(js).toString("base64"));
 }
 test("single and parent set imports classify audio and preserve project paths in a real ZIP", async () => {
-  const { scanSets, archiveProject } = await importTestModule("set-files");
+  const { scanSets, archiveProject, defaultStemVersion, setFingerprint } = await importTestModule("set-files");
   const { unzipSync } = await import("fflate");
   function file(p) { const f = new File([p], p.split("/").at(-1)); Object.defineProperty(f, "webkitRelativePath", { value: p }); return f; }
   const paths = ["A/Master/bounce.wav", "A/Master/other.mp3", "A/Master/no.txt", "A/STEMS/drums/kick.aiff", "A/Stems/no.asd", "A/Project/Samples/a.wav", "A/Project/session.als", "A/Project/.DS_Store", "A/Project/../escape", "A/Misc/no.wav"];
   const [single] = scanSets(paths.map(file), false);
   assert.equal(single.name, "A"); assert.equal(single.masters.length, 2); assert.equal(single.stems.length, 1); assert.equal(single.project.length, 2);
+  assert.equal(scanSets(paths.map(file), true)[0].stems.length, 1);
+  const deep = scanSets(paths.map(p => file("Backup/Collection/" + p)), true);
+  assert.equal(deep[0].project.length, 2);
+  const rootMaster = scanSets(["Album/bounce.wav","Album/Stems/bass.wav","Album/Project/Samples/no.wav","Album/Misc/no.wav"].map(file), false)[0];
+  assert.deepEqual(rootMaster.masters.map(f=>f.name), ["bounce.wav"]);
+  assert.equal(rootMaster.stems.length, 1);
+  const parentRoot = scanSets(["Collection/Album/bounce.wav","Collection/Album/Stems/bass.wav"].map(file), true)[0];
+  assert.deepEqual(parentRoot.masters.map(f=>f.name), ["bounce.wav"]);
+  assert.equal(scanSets(["Album/Masters/final.WAV"].map(file), false)[0].masters.length, 1);
+  const exporter = scanSets(["Collection/Song/master.wav","Collection/Song/stems/drums.wav","Collection/Song/Song Project/session.als","Collection/Song/Song Project/Samples/kick.wav"].map(file),true)[0];
+  assert.equal(exporter.project.length,2);
+  assert.equal(await setFingerprint(exporter),await setFingerprint({...exporter,project:[...exporter.project].reverse()}));
+  assert.notEqual(await setFingerprint(exporter),await setFingerprint({...exporter,stems:[file("Collection/Song/stems/new.wav")]}));
+  const raw = scanSets(["Session/song.als","Session/Samples/kick.wav"].map(file), false)[0];
+  assert.equal(raw.project.length, 2);
+  const rawZip = unzipSync(new Uint8Array(await (await archiveProject(raw, false, true)).arrayBuffer()));
+  assert.deepEqual(Object.keys(rawZip).sort(), ["Session/Samples/kick.wav","Session/song.als"]);
+  assert.equal(defaultStemVersion([{kind:"stem",version_id:"imported"}],[{id:"master-only"},{id:"imported"}]), "imported");
+  assert.equal(defaultStemVersion([{kind:"stem"}],[]), "");
   const bulk = scanSets([...paths, "B/Stems/bass.wav"].map((p) => file("Collection/" + p)), true);
   assert.deepEqual(bulk.map((s) => s.name), ["A", "B"]);
   for (const [set, parent] of [[single, false], [bulk[0], true]]) {
@@ -138,6 +157,11 @@ test("uses the local SQLite and managed-file backend", async () => {
       shares: [], listens: [{ id: 2, eventUuid: "listen-one", demoId: 1, demoUuid: "demo-one", authorId: account.id, authorName: account.displayName, verdict: "up", note: "Strong chorus", listenedAt: 2 }],
       timedNotes: [{ id: 3, noteUuid: "note-one", demoId: 1, demoUuid: "demo-one", authorId: account.id, authorName: account.displayName, startSeconds: 10, endSeconds: 18.5, note: "Bass change", createdAt: 3 }]
     });
+    database.saveTask({demoUuid:"demo-one",body:"Shorten intro",sourceId:"note:test",sourceLabel:"Timed note"});
+    database.saveTask({demoUuid:"demo-one",body:"Shorten intro",sourceId:"note:test"});
+    if(database.listTasks().length !== 1) process.exit(1);
+    database.completeTask({id:database.listTasks()[0].id,done:true});
+    if(!database.listTasks()[0].done) process.exit(1);
     database.markFeedbackSeen(1234);
     const state = database.readWorkspace();
     if (state.media[0].canvas.x !== 150 || state.media[0].note !== "Album direction") process.exit(1);
@@ -171,6 +195,7 @@ test("uses the local SQLite and managed-file backend", async () => {
     try { database.getRemoteSession(remote.token); process.exit(1); } catch {}
     database.removeDemo("demo-one");
     if (database.listFileVersions("demo-one").length) process.exit(1);
+    if(database.listTasks().length) process.exit(1);
     const removed = database.readWorkspace();
     if (removed.projects[0].tracklists[0].ids.length) process.exit(1);
     if (removed.demos.length || removed.listens.length || removed.timedNotes.length || database.listAttachments("demo-one").length || database.getStoredFile("audio", 1)) process.exit(1);

@@ -9,12 +9,14 @@ Demolition does not require external hosting or cloud storage.
 - Project and demo metadata is stored in `data/demolition.sqlite` during local development.
 - Imported audio copies are stored in `data/audio/`.
 - Imported moodboard files are stored in `data/media/`.
-- Per-demo stems and project files are stored as managed copies in `data/attachments/`, with their metadata in SQLite. Select a demo and use **Stems & project files** to upload multiple files or download them later. ZIP complete project folders (including samples); uploading an Ableton `.als` alone does not include its referenced audio. Attachments are private to this instance and are not part of friend sync or the JSON metadata export. Back up the database and the whole data directory together.
-- **Attach set folder** imports one set into the selected demo. **Import parent folder of sets** imports direct child set folders from the library or project view. Use `Set Name/Master/`, `Set Name/Stems/` and `Set Name/Project/`. Each section is optional. Demolition scans its subfolders, ignores non-audio files in Master/Stems, and packages Project files with their relative paths. Use Ableton’s Collect All and Save first to include external samples. For projects approaching 4 GiB, upload a manually created ZIP64 archive instead.
+- Per-demo stems and project files are stored as managed copies in `data/attachments/`, with their metadata in SQLite. Select a demo and use **Files & versions** to upload multiple files or download them later. Use **Upload project folder** to archive a folder including its subfolders, or upload a ZIP; uploading an Ableton `.als` alone does not include its referenced audio. Attachments are private to this instance and are not part of friend sync or the JSON metadata export. Back up the database and the whole data directory together.
+- **Attach set folder** imports one set into the selected demo. **Import set folders** on the Import page accepts a set folder or a parent containing sets at different depths. Use `Set Name/Master/`, `Set Name/Stems/` and `Set Name/Project/`. Each section is optional. Masters can also sit directly in the set folder or inside `Masters/`; named Ableton folders ending in ` Project` are included. Demolition scans its subfolders, ignores non-audio files in Master/Stems, and packages Project files with their relative paths. Use Ableton’s Collect All and Save first to include external samples. For projects approaching 4 GiB, upload a manually created ZIP64 archive instead.
 - Review each set before importing: select a target demo, create one, or skip it. An existing master is kept unless you choose another. In **Demo playback**, Master is the default. Switch to **Stems** to audition individual exports together with solo and mute. Export stems from the same start point; they play on one clock, not beat-aligned or time-stretched. The browser decodes the stems into memory on demand, so long multitrack sets can be memory intensive. ZIP attachments are downloadable, not directly playable.
+- Import recovery: close and reopen the review to keep the selected files. Retry after a failure to continue using the saved version; identical attachments are checked by content before uploading again. After a page reload, reselect the same folder and destination to recover from the saved checkpoint. The completion summary lists destinations and provides links to the demos.
+- **Work on next** collects local tasks created manually or from comments and timed notes. Tasks retain source attribution, support completion/reopening, and are included in JSON metadata backups. They are not shared with friends.
 - The entire `data/` directory is excluded from Git.
 - **Files & versions** on a demo groups related masters, stems and project files under dated labels with editable notes. Create a version before adding its exports, or use set-folder import to create one automatically. Replacing a master retains snapshots of the previous and incoming master. These are full managed copies and use additional disk space.
-- During project tracklist playback, select a file version and switch between its master and stems. Solo/mute and seeking stay in the project audition; playback advances to the next track on completion. Votes and discussion remain visible below the player.
+- During project tracklist playback, select a file version and switch between its master and stems. Volume, pan, solo/mute and seeking stay in the project audition; playback advances to the next track on completion. Votes and discussion remain visible below the player.
 - Imported source files are read-only inputs. Demolition works with its own copies.
 
 The Docker deployment keeps SQLite in the local path configured by `DEMOLITION_DATABASE_DIR`; `DEMOLITION_DATA_DIR` can point to separate bulk storage for audio and moodboard files.
@@ -125,7 +127,7 @@ openssl rand -hex 32
 Copy the generated token into `.env`, then set each value for your server:
 
 ```dotenv
-DEMOLITION_IMAGE=ghcr.io/joshtrim/demolition:0.1.16
+DEMOLITION_IMAGE=ghcr.io/joshtrim/demolition:0.1.17
 DEMOLITION_BIND_ADDRESS=127.0.0.1
 DEMOLITION_ALLOW_LAN=false
 DEMOLITION_UI_PORT=5030

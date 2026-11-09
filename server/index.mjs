@@ -6,6 +6,7 @@ import path from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import {
+  markImportVersion, listTasks, saveTask, completeTask,
   listAttachments, saveAttachment, getAttachment, removeDemo, listFileVersions, saveFileVersion, updateFileVersion, saveMasterFileVersion,
   acceptPairing, audioDirectory, authenticatePeer, buildSyncPackage, canFriendAccessAudio, closeRemoteSession,
   createPairingInvite, createRemoteSession, databasePath, dataDirectory, decodePairingInvite, demoByUuid, friendWithSecrets,
@@ -376,6 +377,9 @@ const server = createServer(async (req, res) => {
     if (req.method === "OPTIONS") { res.writeHead(204, corsHeaders(req)); return res.end(); }
     if (!url.pathname.startsWith("/api/peer/") && !isOwnerApiRequest(req)) return sendJson(req, res, 403, { error: "This endpoint is available only through the owner gateway" });
     if (req.method === "GET" && url.pathname === "/api/health") return sendJson(req, res, 200, { ok: true, database: "sqlite", peerSync: true });
+    if (url.pathname === "/api/tasks" && req.method === "GET") return sendJson(req, res, 200, listTasks());
+    if (url.pathname === "/api/tasks" && req.method === "POST") return sendJson(req, res, 201, saveTask(await readJson(req)));
+    if (url.pathname === "/api/tasks" && req.method === "PUT") return sendJson(req, res, 200, completeTask(await readJson(req)));
     if (req.method === "GET" && url.pathname === "/api/comments") return sendJson(req, res, 200, listComments());
     if (req.method === "POST" && url.pathname === "/api/comments") return sendJson(req, res, 201, postComment(await readJson(req)));
     if (req.method === "GET" && url.pathname === "/api/state") return sendJson(req, res, 200, readWorkspace());
@@ -465,12 +469,16 @@ const server = createServer(async (req, res) => {
         updateFileVersion(body.id, body.label.trim(), body.notes);
         return sendJson(req, res, 200, listFileVersions(uuid));
       }
+      if (body.importKey !== undefined && (typeof body.importKey !== "string" || !/^[a-f0-9]{64}:[a-f0-9]*$/.test(body.importKey))) return sendJson(req,res,400,{error:"Invalid import key"});
+      const priorImport = body.importKey && listFileVersions(uuid).find(version => version.import_key === body.importKey);
+      if (priorImport) return sendJson(req,res,200,{id:priorImport.id});
       let id = randomUUID();
       const audio = getStoredFile("audio", demo.id);
       // A version captures the master bytes as well as the label and date.
       if (audio) {
         id = await captureMaster(uuid, audio, body.label.trim(), body.notes);
       } else saveFileVersion(id, uuid, body.label.trim(), body.notes);
+      if (body.importKey) markImportVersion(id, body.importKey);
       return sendJson(req, res, 201, { id });
     }
     const attachmentList = url.pathname.match(/^\/api\/demos\/([^/]+)\/attachments$/);
