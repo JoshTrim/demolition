@@ -39,9 +39,22 @@ test("set import recovery retains master and attachments across server restart",
     await request("/api/demos/import-demo/attachments?kind=stem&version="+version.id,"POST",wav,{"x-file-name":"drums.wav"});
     const project=zipSync({"Project/session.als":new TextEncoder().encode("test project")});
     await request("/api/demos/import-demo/attachments?kind=project&version="+version.id,"POST",project,{"x-file-name":"project.zip"});
+    const stem=(await (await request("/api/demos/import-demo/attachments")).json()).find(f=>f.kind==="stem");
+    const note={demoUuid:"import-demo",versionId:version.id,trackId:stem.id,body:"Lower drums here",start:0.2,end:0.8};
+    const savedNotes=await (await request("/api/playback-notes","POST",note)).json();
+    assert.equal(savedNotes[0].track_id,stem.id);
     await stop();await start();
     const retry=await (await request("/api/demos/import-demo/file-versions","POST",payload)).json();
     assert.equal(retry.id,version.id);
+    const restoredNotes=await (await request("/api/playback-notes?demo=import-demo")).json();
+    assert.equal(restoredNotes[0].version_id,version.id);
+    assert.equal(restoredNotes[0].end_seconds,0.8);
+    const edited=await (await request("/api/playback-notes","POST",{...note,id:restoredNotes[0].id,body:"Lower drums by 2 dB"})).json();
+    assert.equal(edited.length,1);assert.equal(edited[0].body,"Lower drums by 2 dB");
+    const invalid=await fetch("http://127.0.0.1:"+port+"/api/playback-notes",{method:"POST",headers:{"X-Demolition-Proxy-Token":"test-token","content-type":"application/json"},body:JSON.stringify({...note,trackId:"other-demo-stem"})});
+    assert.equal(invalid.ok,false);
+    await request("/api/playback-notes","DELETE",{demoUuid:"import-demo",id:restoredNotes[0].id});
+    assert.equal((await (await request("/api/playback-notes?demo=import-demo")).json()).length,0);
     assert.equal((await (await request("/api/demos/import-demo/file-versions")).json()).filter(v=>v.import_key===payload.importKey).length,1);
     const files=(await (await request("/api/demos/import-demo/attachments")).json()).filter(file=>file.version_id===version.id);
     assert.equal(files.filter(file=>file.kind==="stem").length,1);
@@ -52,6 +65,22 @@ test("set import recovery retains master and attachments across server restart",
       assert.deepEqual(new Uint8Array(await response.arrayBuffer()),file.kind==="project"?project:wav);
     }
     assert.deepEqual(new Uint8Array(await (await request("/api/audio/1")).arrayBuffer()),wav);
+    const focusState=await (await request("/api/state")).json();
+    focusState.projects.push({name:"Focus fixture",color:"blue",mood:""});
+    for(let i=0;i<3;i++)focusState.demos.push({...focusState.demos[0],id:201+i,uuid:"focus-"+i,project:"Focus fixture",status:i===2?"finished":"shaping"});
+    await request("/api/state","PUT",focusState);
+    const first=await (await request("/api/project-focus","POST",{project:"Focus fixture"})).json();
+    const second=await (await request("/api/project-focus","POST",{project:"Focus fixture"})).json();
+    assert.notEqual(first.uuid,second.uuid);
+    assert.notEqual(first.uuid,"focus-2");assert.notEqual(second.uuid,"focus-2");
+    const third=await (await request("/api/project-focus","POST",{project:"Focus fixture"})).json();
+    assert.notEqual(third.uuid,second.uuid);
+    const only=await (await request("/api/project-focus","POST",{project:"Focus fixture",ids:[203],includeFinished:true})).json();
+    assert.equal(only.uuid,"focus-2");
+    const empty=await fetch("http://127.0.0.1:"+port+"/api/project-focus",{method:"POST",headers:{"X-Demolition-Proxy-Token":"test-token","content-type":"application/json"},body:JSON.stringify({project:"Focus fixture",ids:[1]})});
+    assert.equal(empty.ok,false);
+    await stop();await start();
+    assert.equal((await (await request("/api/project-focus?project=Focus%20fixture")).json()).uuid,"focus-2");
     if (process.env.DEMOLITION_TEST_SET_FOLDER) {
       const {transpileModule,ModuleKind,ScriptTarget}=await import("typescript");
       const source=await readFile(new URL("../app/set-files.ts",import.meta.url),"utf8");

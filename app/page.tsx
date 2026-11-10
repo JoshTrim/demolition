@@ -6,6 +6,7 @@ import QRCode from "qrcode";
 import DemoSearch from "./demo-search";
 import ProjectTracklists, { type TracklistVersion } from "./project-tracklists";
 import ProjectBuilder from "./project-builder";
+import ProjectFocus from "./project-focus";
 import DemoTasks, { type Task } from "./demo-tasks";
 import MoodboardCanvas, { type CanvasPosition } from "./moodboard-canvas";
 import SetImport, { type SetPlan } from "./set-import";
@@ -2885,7 +2886,8 @@ export default function Home() {
 
   async function exportBackup() {
     let tasks: Task[]; try { tasks = await apiRequest<Task[]>("/api/tasks"); } catch { window.alert("Could not load tasks; backup was not exported. Please retry."); return; }
-    const payload = JSON.stringify({ tasks, version: 9, exportedAt: new Date().toISOString(), demos, projects, tags, orders, media, listens, timedNotes, shares, projectShares }, null, 2);
+    let playbackNotes: unknown[]; try { playbackNotes = await apiRequest<unknown[]>("/api/playback-notes"); } catch { window.alert("Could not load timeline notes; backup was not exported."); return; }
+    const payload = JSON.stringify({ playbackNotes, tasks, version: 10, exportedAt: new Date().toISOString(), demos, projects, tags, orders, media, listens, timedNotes, shares, projectShares }, null, 2);
     const url = URL.createObjectURL(new Blob([payload], { type: "application/json" }));
     const anchor = document.createElement("a");
     anchor.href = url;
@@ -2985,6 +2987,7 @@ export default function Home() {
 
           {view === "project" && <button className="text-button" onClick={() => navigateWorkspace("projects")}>← All projects</button>}
           {view === "project" && project !== "Unsorted" && <div className="project-tabs" role="tablist" aria-label={`${project} project sections`}><button role="tab" aria-selected={projectTab === "tracklist"} className={projectTab === "tracklist" ? "active" : ""} onClick={() => setProjectTab("tracklist")}><span>☷</span> Tracklists <b>{projectVersions.length + 1}</b></button><button role="tab" aria-selected={projectTab === "moodboard"} className={projectTab === "moodboard" ? "active" : ""} onClick={() => setProjectTab("moodboard")}><span>▦</span> Moodboard <b>{projectMedia.length}</b></button></div>}
+          {view === "project" && project !== "Unsorted" && projectTab === "tracklist" && <ProjectFocus key={"focus:"+project} project={project} tracks={demos.filter(d => d.project === project && d.ownerId === account?.id)} order={projectOrder} listName={selectedTracklist?.name ?? "Main tracklist"} request={apiRequest} onOpen={openDemo} />}
           {view === "project" && project !== "Unsorted" && projectTab === "tracklist" && <ProjectTracklists key={project} mainIds={orders[project] ?? []} lists={projectVersions} selected={selectedTracklist?.id ?? ""} onSelect={(id) => setSelectedTracklists((current) => ({ ...current, [project]: id }))} onChange={(tracklists) => setProjects((current) => current.map((item) => item.name === project ? { ...item, tracklists } : item))} ids={projectOrder} tracks={demos.filter((demo) => demo.project === project)} onStarted={(id) => { detailAudioRef.current?.pause(); markDemoListened(id); }} renderFeedback={(id, session) => { const demo = demos.find((item) => item.id === id); return demo ? <ProjectTrackFeedback key={`${session}:${demo.uuid}`} demo={demo} account={account} listens={listens} onVote={(vote) => setListens((current) => [vote, ...current.filter((item) => item.eventUuid !== vote.eventUuid)])} /> : null; }} renderPlayer={(id, session, onEnded, onStarted) => { const demo = demos.find((d) => d.id === id); return demo ? <DemoFiles key={session + ":" + demo.uuid} uuid={demo.uuid} master={demo.audioName ? apiUrl("/api/audio/" + id) : undefined} apiUrl={apiUrl} autoPlay onEnded={onEnded} onStarted={onStarted} /> : null; }} />}
           {statsFilters.length > 0 && view !== "stats" && <div className="stats-filter-notice" role="status"><span>FILTER</span><div className="stats-filter-copy"><p><strong>{statsFilteredDemos.length}</strong> matching demos from the statistics view.</p><div className="stats-filter-chips">{statsFilters.map((activeFilter) => <button type="button" className="stats-filter-chip" key={`${activeFilter.type}-${activeFilter.value}`} onClick={() => setStatsFilters(statsFilters.filter((filter) => filter !== activeFilter))} aria-label={`Remove ${activeFilter.label} filter`}>{activeFilter.label} ×</button>)}</div></div><button className="stats-filter-listen" disabled={!statsAuditionDemos.length} onClick={() => startRapidListen(statsAuditionDemos)}>{statsAuditionDemos.length ? `▶ Listen to ${statsAuditionDemos.length}` : statsFilteredDemos.length ? "No local audio" : "No matches"}</button><button onClick={() => setStatsFilters([])}>Clear all ×</button></div>}
 

@@ -18,6 +18,8 @@ Demolition does not require external hosting or cloud storage.
 - **Files & versions** on a demo groups related masters, stems and project files under dated labels with editable notes. Create a version before adding its exports, or use set-folder import to create one automatically. Replacing a master retains snapshots of the previous and incoming master. These are full managed copies and use additional disk space.
 - During project tracklist playback, select a file version and switch between its master and stems. Volume, pan, solo/mute and seeking stay in the project audition; playback advances to the next track on completion. Votes and discussion remain visible below the player.
 - Imported source files are read-only inputs. Demolition works with its own copies.
+- On a project's Tracklists page, **Pick a track to work on** draws randomly from all owned project demos or the current tracklist. Finished tracks are excluded unless enabled. Picks avoid repeats until the eligible pool is covered, and the current pick is saved per project in SQLite. The selected track shows its next action, notes and open tasks, with a button to open its demo page.
+- **Playback & notes** includes a shared waveform timeline for the master and stems. Load waveforms, drag a range on a track, and add a note; notes can be edited, deleted or used to seek. New notes are local-only and tied to the selected file version and stem. Existing listening notes appear on the master lane labelled as not version-specific. Timeline notes are included in metadata exports; restore the full SQLite database and attachment folder to preserve their associated file versions as well.
 
 The Docker deployment keeps SQLite in the local path configured by `DEMOLITION_DATABASE_DIR`; `DEMOLITION_DATA_DIR` can point to separate bulk storage for audio and moodboard files.
 
@@ -127,7 +129,7 @@ openssl rand -hex 32
 Copy the generated token into `.env`, then set each value for your server:
 
 ```dotenv
-DEMOLITION_IMAGE=ghcr.io/joshtrim/demolition:0.1.17
+DEMOLITION_IMAGE=ghcr.io/joshtrim/demolition:0.1.18
 DEMOLITION_BIND_ADDRESS=127.0.0.1
 DEMOLITION_ALLOW_LAN=false
 DEMOLITION_UI_PORT=5030

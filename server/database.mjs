@@ -1,4 +1,4 @@
-import { generateKeyPairSync, randomBytes, randomUUID, sign, timingSafeEqual, verify } from "node:crypto";
+import { generateKeyPairSync, randomBytes, randomInt, randomUUID, sign, timingSafeEqual, verify } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -56,6 +56,7 @@ export function removeDemo(uuid) {
     database.prepare("DELETE FROM demo_shares WHERE demo_uuid = ?").run(uuid);
     database.prepare("DELETE FROM track_comments WHERE demo_uuid = ?").run(uuid);
     database.prepare("DELETE FROM demo_tasks WHERE demo_uuid = ?").run(uuid);
+    database.prepare("DELETE FROM playback_notes WHERE demo_uuid = ?").run(uuid);
     database.prepare("DELETE FROM demo_attachments WHERE demo_uuid = ?").run(uuid);
     database.prepare("DELETE FROM demo_file_versions WHERE demo_uuid = ?").run(uuid);
     removeStoredFile("audio", demo.id);
@@ -360,6 +361,53 @@ export function completeTask(input) {
 
 if (!database.prepare("PRAGMA table_info(demo_file_versions)").all().some(column => column.name === "import_key")) database.exec("ALTER TABLE demo_file_versions ADD COLUMN import_key TEXT");
 export function markImportVersion(id, key) { database.prepare("UPDATE demo_file_versions SET import_key = ? WHERE id = ?").run(key, id); }
+
+database.exec("CREATE TABLE IF NOT EXISTS playback_notes (id TEXT PRIMARY KEY, demo_uuid TEXT NOT NULL, version_id TEXT NOT NULL DEFAULT '', track_id TEXT NOT NULL DEFAULT 'master', body TEXT NOT NULL, start_seconds REAL NOT NULL, end_seconds REAL NOT NULL, created_at INTEGER NOT NULL)");
+export function listPlaybackNotes(uuid) {
+  if (!uuid) return database.prepare("SELECT * FROM playback_notes ORDER BY start_seconds, created_at").all();
+  const local = database.prepare("SELECT * FROM playback_notes WHERE demo_uuid = ? ORDER BY start_seconds, created_at").all(uuid);
+  const earlier = database.prepare("SELECT * FROM timed_notes WHERE demo_uuid = ? ORDER BY start_seconds").all(uuid).map(n=>({id:"listening:"+n.note_uuid,version_id:"",track_id:"master",body:n.note,start_seconds:n.start_seconds,end_seconds:n.end_seconds,legacy:true,author:n.author_name}));
+  return [...local,...earlier];
+}
+export function savePlaybackNote(input, restoring = false) {
+  const demo = demoByUuid(input.demoUuid);
+  if (!demo) throw new Error("Demo not found");
+  const version = String(input.versionId || ""), track = String(input.trackId || "master");
+  if (version && !listFileVersions(demo.uuid).some(v => v.id === version)) throw new Error("Version does not belong to demo");
+  if (track !== "master" && !listAttachments(demo.uuid).some(a => a.id === track && a.kind === "stem" && (a.version_id || "") === version)) throw new Error("Stem does not belong to this version");
+  if (typeof input.body !== "string" || !input.body.trim() || input.body.length > 5000 || !Number.isFinite(input.start) || !Number.isFinite(input.end) || input.start < 0 || input.end < input.start || input.end > 86400) throw new Error("Provide note text and a valid time range");
+  const id = input.id || randomUUID();
+  if (input.id && !restoring && !listPlaybackNotes(demo.uuid).some(n => n.id === id && n.version_id === version)) throw new Error("Note not found in this version");
+  database.prepare("INSERT INTO playback_notes VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET track_id=excluded.track_id, body=excluded.body, start_seconds=excluded.start_seconds, end_seconds=excluded.end_seconds").run(id,demo.uuid,version,track,input.body.trim(),input.start,input.end,Date.now());
+  return listPlaybackNotes(demo.uuid);
+}
+export function deletePlaybackNote(uuid,id) {
+  database.prepare("DELETE FROM playback_notes WHERE demo_uuid = ? AND id = ?").run(uuid,id);
+  return listPlaybackNotes(uuid);
+}
+
+database.exec("CREATE TABLE IF NOT EXISTS project_focus (project TEXT PRIMARY KEY, demo_uuid TEXT NOT NULL, picked_at INTEGER NOT NULL, seen TEXT NOT NULL DEFAULT '[]')");
+export function getProjectFocus(project) {
+  const row=database.prepare("SELECT * FROM project_focus WHERE project = ?").get(project);
+  if (!row || !database.prepare("SELECT name FROM projects WHERE name = ?").get(project)) return null;
+  const demo=demoByUuid(row.demo_uuid);
+  return demo && demo.project===project ? {uuid:row.demo_uuid,pickedAt:row.picked_at} : null;
+}
+export function pickProjectFocus(input) {
+  if (typeof input.project!=="string" || !database.prepare("SELECT name FROM projects WHERE name = ?").get(input.project)) throw new Error("Project not found");
+  if (input.ids!==undefined && (!Array.isArray(input.ids) || input.ids.some(id=>!Number.isSafeInteger(id)))) throw new Error("Invalid tracklist");
+  const candidates=database.prepare("SELECT uuid, id, status FROM demos WHERE project = ? AND owner_id = ?").all(input.project,getAccount().id).filter(d=>(input.includeFinished===true||d.status!=="finished") && (input.ids===undefined||input.ids.includes(Number(d.id))));
+  if (!candidates.length) throw new Error("No eligible tracks in this scope");
+  const previous=database.prepare("SELECT * FROM project_focus WHERE project = ?").get(input.project);
+  let seen=previous?JSON.parse(previous.seen):[];
+  let available=candidates.filter(d=>!seen.includes(d.uuid));
+  if (!available.length) {seen=[];available=candidates.filter(d=>candidates.length===1||d.uuid!==previous?.demo_uuid);}
+  const choice=available[randomInt(available.length)];
+  seen.push(choice.uuid);
+  const pickedAt=Date.now();
+  database.prepare("INSERT INTO project_focus VALUES (?,?,?,?) ON CONFLICT(project) DO UPDATE SET demo_uuid=excluded.demo_uuid,picked_at=excluded.picked_at,seen=excluded.seen").run(input.project,choice.uuid,pickedAt,JSON.stringify(seen));
+  return {uuid:choice.uuid,pickedAt,poolSize:candidates.length,remaining:candidates.filter(d=>!seen.includes(d.uuid)).length};
+}
 
 function createOwner() {
   const existing = database.prepare("SELECT * FROM owner_identity LIMIT 1").get();
@@ -739,6 +787,11 @@ export function writeWorkspace(payload) {
       const demo = demoByUuid(task.demo_uuid);
       if (!demo || demo.owner_id !== owner.id || typeof task.body !== "string" || !task.body.trim() || task.body.length > 5000) continue;
       database.prepare("INSERT OR IGNORE INTO demo_tasks (id,demo_uuid,body,source_id,source_label,done,created_at) VALUES (?,?,?,?,?,?,?)").run(String(task.id || randomUUID()),demo.uuid,task.body,task.source_id ? String(task.source_id).slice(0,200) : null,String(task.source_label || "").slice(0,300),Number(Boolean(task.done)),Number(task.created_at)||Date.now());
+    }
+    if (Array.isArray(payload.playbackNotes)) for (const note of payload.playbackNotes) {
+      if (!demoByUuid(note.demo_uuid) || database.prepare("SELECT id FROM playback_notes WHERE id = ?").get(note.id)) continue;
+      if (note.version_id && !listFileVersions(note.demo_uuid).some(v => v.id === note.version_id)) continue;
+      savePlaybackNote({id:note.id,demoUuid:note.demo_uuid,versionId:note.version_id,trackId:note.track_id,body:note.body,start:note.start_seconds,end:note.end_seconds},true);
     }
     database.exec("DELETE FROM project_tracklist_versions WHERE project NOT IN (SELECT name FROM projects)");
     database.exec("COMMIT");

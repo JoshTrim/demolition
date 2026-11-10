@@ -6,6 +6,8 @@ import path from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import {
+  getProjectFocus, pickProjectFocus,
+  listPlaybackNotes, savePlaybackNote, deletePlaybackNote,
   markImportVersion, listTasks, saveTask, completeTask,
   listAttachments, saveAttachment, getAttachment, removeDemo, listFileVersions, saveFileVersion, updateFileVersion, saveMasterFileVersion,
   acceptPairing, audioDirectory, authenticatePeer, buildSyncPackage, canFriendAccessAudio, closeRemoteSession,
@@ -377,6 +379,11 @@ const server = createServer(async (req, res) => {
     if (req.method === "OPTIONS") { res.writeHead(204, corsHeaders(req)); return res.end(); }
     if (!url.pathname.startsWith("/api/peer/") && !isOwnerApiRequest(req)) return sendJson(req, res, 403, { error: "This endpoint is available only through the owner gateway" });
     if (req.method === "GET" && url.pathname === "/api/health") return sendJson(req, res, 200, { ok: true, database: "sqlite", peerSync: true });
+    if (url.pathname === "/api/project-focus" && req.method === "GET") return sendJson(req,res,200,getProjectFocus(url.searchParams.get("project")));
+    if (url.pathname === "/api/project-focus" && req.method === "POST") return sendJson(req,res,200,pickProjectFocus(await readJson(req)));
+    if (url.pathname === "/api/playback-notes" && req.method === "GET") return sendJson(req,res,200,listPlaybackNotes(url.searchParams.get("demo") || undefined));
+    if (url.pathname === "/api/playback-notes" && req.method === "POST") return sendJson(req,res,201,savePlaybackNote(await readJson(req)));
+    if (url.pathname === "/api/playback-notes" && req.method === "DELETE") { const body = await readJson(req); return sendJson(req,res,200,deletePlaybackNote(body.demoUuid,body.id)); }
     if (url.pathname === "/api/tasks" && req.method === "GET") return sendJson(req, res, 200, listTasks());
     if (url.pathname === "/api/tasks" && req.method === "POST") return sendJson(req, res, 201, saveTask(await readJson(req)));
     if (url.pathname === "/api/tasks" && req.method === "PUT") return sendJson(req, res, 200, completeTask(await readJson(req)));
