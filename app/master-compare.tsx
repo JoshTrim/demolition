@@ -1,0 +1,17 @@
+"use client";
+import { useEffect, useRef, useState } from "react";
+export type MasterChoice = {id:string;label:string;url:string};
+const clock=(s:number)=>Math.floor(s/60)+":"+String(Math.floor(s%60)).padStart(2,"0");
+export default function MasterCompare({choices,initialB}:{choices:MasterChoice[];initialB?:string}){
+  const [a,setA]=useState(choices[0]?.id||""),[b,setB]=useState(initialB&&initialB!==choices[0]?.id&&choices.some(c=>c.id===initialB)?initialB:choices[1]?.id||""),[side,setSide]=useState<"A"|"B">("A");
+  const [playing,setPlaying]=useState(false),[position,setPosition]=useState(0),[duration,setDuration]=useState(0),[error,setError]=useState("");
+  const player=useRef<HTMLAudioElement>(null),resume=useRef({time:0,play:false});
+  const source=choices.find(c=>c.id===(side==="A"?a:b));
+  useEffect(()=>{const audio=player.current;return()=>{audio?.pause();};},[]);
+  function prepare(){const audio=player.current;resume.current={time:audio?.currentTime||position,play:!!audio&&(!audio.paused||resume.current.play)};audio?.pause();setError("");}
+  function switchSide(next:"A"|"B"){if(next===side)return;if(choices.find(c=>c.id===(next==="A"?a:b))?.url===source?.url){setSide(next);return;}prepare();setSide(next);}
+  return <section className="master-compare" aria-label="Compare master versions"><header><h3>Compare masters</h3><p>Switch A/B at the same position. This does not replace either file. Levels are not loudness-matched.</p></header><div className="compare-choices">{(["A","B"] as const).map(s=><label key={s}>Master {s}<select value={s==="A"?a:b} onChange={e=>{if(side===s)prepare();(s==="A"?setA:setB)(e.target.value);}}>{choices.map(c=><option key={c.id} value={c.id}>{c.label}</option>)}</select></label>)}</div>
+    <audio ref={player} src={source?.url} preload="metadata" onLoadedMetadata={e=>{const audio=e.currentTarget;setDuration(Number.isFinite(audio.duration)?audio.duration:0);audio.currentTime=Math.min(resume.current.time,Number.isFinite(audio.duration)?Math.max(0,audio.duration-.01):0);setPosition(audio.currentTime);if(resume.current.play){resume.current.play=false;void audio.play().catch(()=>setError("Press Play to continue."));}}} onPlay={()=>{document.querySelectorAll("audio").forEach(audio=>{if(audio!==player.current)audio.pause();});setPlaying(true);}} onPause={()=>setPlaying(false)} onTimeUpdate={e=>setPosition(e.currentTarget.currentTime)} onEnded={()=>setPlaying(false)} onError={()=>setError("Could not load this master. Choose another version or retry.")}><track kind="captions"/></audio>
+    <div className="compare-transport"><button className="secondary-button" aria-pressed={side==="A"} onClick={()=>switchSide("A")}>A</button><button className="secondary-button" aria-pressed={side==="B"} onClick={()=>switchSide("B")}>B</button><button className="primary-button" disabled={!source} onClick={()=>{if(playing){resume.current.play=false;player.current?.pause();}else void player.current?.play().catch(()=>setError("Could not play this master."));}}>{playing?"Pause":"Play"}</button><span>{clock(position)} / {clock(duration)} · Listening to {side}</span></div><label>Comparison position<input type="range" min={0} max={duration||0} step=".1" value={Math.min(position,duration)} disabled={!duration} onChange={e=>{if(player.current)player.current.currentTime=Number(e.target.value);}}/></label>{error&&<p role="alert">{error}</p>}
+  </section>;
+}

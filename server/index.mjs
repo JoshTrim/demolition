@@ -482,7 +482,7 @@ const server = createServer(async (req, res) => {
       let id = randomUUID();
       const audio = getStoredFile("audio", demo.id);
       // A version captures the master bytes as well as the label and date.
-      if (audio) {
+      if (audio && body.captureCurrent !== false) {
         id = await captureMaster(uuid, audio, body.label.trim(), body.notes);
       } else saveFileVersion(id, uuid, body.label.trim(), body.notes);
       if (body.importKey) markImportVersion(id, body.importKey);
@@ -496,14 +496,18 @@ const server = createServer(async (req, res) => {
       const kind = url.searchParams.get("kind");
       const versionId = url.searchParams.get("version");
       if (versionId && !listFileVersions(demoUuid).some((v) => v.id === versionId)) return sendJson(req, res, 400, { error: "Version does not belong to this demo" });
-      if (!["stem", "project"].includes(kind)) return sendJson(req, res, 400, { error: "Choose stems or project files" });
+      if (!["stem", "project", "master"].includes(kind)) return sendJson(req, res, 400, { error: "Choose a master, stems or project files" });
+      if (kind === "master" && (!versionId || listAttachments(demoUuid).some(a=>a.version_id===versionId&&a.kind==="master"))) return sendJson(req,res,409,{error:"Choose an empty version for the new master. Existing masters cannot be overwritten here."});
       const directory = path.join(dataDirectory, "attachments");
       await mkdir(directory, { recursive: true });
       const id = randomUUID();
       const destination = path.join(directory, id);
       try {
         await pipeline(req, createWriteStream(destination, { flags: "wx" }));
-        saveAttachment(id, demoUuid, safeFileName(req.headers["x-file-name"]), kind, (await stat(destination)).size, versionId);
+        const size=(await stat(destination)).size;
+        if (kind==="master" && (!size || !/\.(wav|aif|aiff|mp3|m4a|flac|ogg|opus|aac)$/i.test(safeFileName(req.headers["x-file-name"])))) throw new Error("Choose a non-empty audio file for the version master");
+        if (kind==="master" && listAttachments(demoUuid).some(a=>a.version_id===versionId&&a.kind==="master")) throw new Error("This version already has a master");
+        saveAttachment(id, demoUuid, safeFileName(req.headers["x-file-name"]), kind, size, versionId);
       } catch (error) {
         await unlink(destination).catch(() => undefined);
         throw error;

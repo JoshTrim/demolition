@@ -65,6 +65,19 @@ test("set import recovery retains master and attachments across server restart",
       assert.deepEqual(new Uint8Array(await response.arrayBuffer()),file.kind==="project"?project:wav);
     }
     assert.deepEqual(new Uint8Array(await (await request("/api/audio/1")).arrayBuffer()),wav);
+    const alternate=await (await request("/api/demos/import-demo/file-versions","POST",{label:"Mix 2",notes:"Shorter intro",captureCurrent:false})).json();
+    assert.equal((await (await request("/api/demos/import-demo/attachments")).json()).some(f=>f.version_id===alternate.id),false);
+    const changed=wav.slice();changed[100]=42;
+    await request("/api/demos/import-demo/attachments?kind=master&version="+alternate.id,"POST",changed,{"x-file-name":"master.wav"});
+    assert.deepEqual(new Uint8Array(await (await request("/api/audio/1")).arrayBuffer()),wav);
+    const altFiles=(await (await request("/api/demos/import-demo/attachments")).json()).filter(f=>f.version_id===alternate.id);
+    assert.equal(altFiles.length,1);
+    assert.deepEqual(new Uint8Array(await (await request("/api/attachments/"+altFiles[0].id+"?play=1")).arrayBuffer()),changed);
+    const overwrite=await fetch("http://127.0.0.1:"+port+"/api/demos/import-demo/attachments?kind=master&version="+alternate.id,{method:"POST",headers:{"X-Demolition-Proxy-Token":"test-token","x-file-name":"master.wav"},body:wav});
+    assert.equal(overwrite.status,409);
+    await stop();await start();
+    assert.deepEqual(new Uint8Array(await (await request("/api/audio/1")).arrayBuffer()),wav);
+    assert.deepEqual(new Uint8Array(await (await request("/api/attachments/"+altFiles[0].id+"?play=1")).arrayBuffer()),changed);
     const focusState=await (await request("/api/state")).json();
     focusState.projects.push({name:"Focus fixture",color:"blue",mood:""});
     for(let i=0;i<3;i++)focusState.demos.push({...focusState.demos[0],id:201+i,uuid:"focus-"+i,project:"Focus fixture",status:i===2?"finished":"shaping"});

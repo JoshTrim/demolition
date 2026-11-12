@@ -15,7 +15,7 @@ Demolition does not require external hosting or cloud storage.
 - Import recovery: close and reopen the review to keep the selected files. Retry after a failure to continue using the saved version; identical attachments are checked by content before uploading again. After a page reload, reselect the same folder and destination to recover from the saved checkpoint. The completion summary lists destinations and provides links to the demos.
 - **Work on next** collects local tasks created manually or from comments and timed notes. Tasks retain source attribution, support completion/reopening, and are included in JSON metadata backups. They are not shared with friends.
 - The entire `data/` directory is excluded from Git.
-- **Files & versions** on a demo groups related masters, stems and project files under dated labels with editable notes. Create a version before adding its exports, or use set-folder import to create one automatically. Replacing a master retains snapshots of the previous and incoming master. These are full managed copies and use additional disk space.
+- **Files & versions** groups related masters, stems and project files under dated labels. To keep the existing master and add a different export, use **Add version**, enter a name, choose **New master audio**, then **Upload as new version**. The current master is not replaced. **Compare masters A/B** switches between any two masters at the same playback position (without loudness matching). Stems and project uploads attach to the selected version. Incomplete versions can be resumed by selecting them and uploading their missing master. Saving a snapshot of the current master is a separate action; direct replacement is under **Replace current master (advanced)** and retains safety snapshots. Managed copies use additional disk space.
 - During project tracklist playback, select a file version and switch between its master and stems. Volume, pan, solo/mute and seeking stay in the project audition; playback advances to the next track on completion. Votes and discussion remain visible below the player.
 - Imported source files are read-only inputs. Demolition works with its own copies.
 - On a project's Tracklists page, **Pick a track to work on** draws randomly from all owned project demos or the current tracklist. Finished tracks are excluded unless enabled. Picks avoid repeats until the eligible pool is covered, and the current pick is saved per project in SQLite. The selected track shows its next action, notes and open tasks, with a button to open its demo page.
@@ -129,7 +129,7 @@ openssl rand -hex 32
 Copy the generated token into `.env`, then set each value for your server:
 
 ```dotenv
-DEMOLITION_IMAGE=ghcr.io/joshtrim/demolition:0.1.18
+DEMOLITION_IMAGE=ghcr.io/joshtrim/demolition:0.1.19
 DEMOLITION_BIND_ADDRESS=127.0.0.1
 DEMOLITION_ALLOW_LAN=false
 DEMOLITION_UI_PORT=5030
