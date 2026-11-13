@@ -8,6 +8,35 @@ import { promisify } from "node:util";
 
 const run = promisify(execFile);
 
+test("production bundles both local UI fonts and their licenses", async () => {
+  for (const name of ["press-start-2p", "geist-mono"]) {
+    const font = await readFile(new URL(`../dist/client/fonts/${name}-latin.woff2`, import.meta.url));
+    assert.equal(font.subarray(0, 4).toString(), "wOF2");
+    const license = await readFile(new URL(`../dist/client/fonts/${name}-OFL.txt`, import.meta.url), "utf8");
+    assert.match(license, /SIL OPEN FONT LICENSE/i);
+  }
+});
+
+test("search keeps results outside its collapsible filters", async () => {
+  const { transpileModule, ModuleKind, JsxEmit } = await import("typescript");
+  const { createElement } = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const source = await readFile(new URL("../app/demo-search.tsx", import.meta.url), "utf8");
+  const output = transpileModule(source, { compilerOptions: { module: ModuleKind.ESNext, jsx: JsxEmit.ReactJSX } }).outputText
+    .replaceAll('from "react"', `from ${JSON.stringify(import.meta.resolve("react"))}`)
+    .replaceAll('from "react/jsx-runtime"', `from ${JSON.stringify(import.meta.resolve("react/jsx-runtime"))}`);
+  const { default: Search } = await import(`data:text/javascript;base64,${Buffer.from(output).toString("base64")}`);
+  const html = renderToStaticMarkup(createElement(Search, {
+    demos: [{ id: 1, title: "Draft", bpm: 120, tags: ["Session"], project: "EP", status: "shaping", note: "", audioName: "draft.wav" }],
+    query: "", statsFor: () => ({ up: 2, down: 1, count: 3 }), setQuery() {}, onOpen() {}, onListen() {},
+  }));
+  assert.match(html, /<details class="search-advanced"><summary>/);
+  assert.match(html, /aria-label="Tempo minimum"/);
+  assert.match(html, /1 of 1 demos/);
+  assert.ok(html.indexOf('class="search-results-header"') > html.indexOf("</details>"));
+  assert.match(html, /Listen to 1 matches/);
+});
+
 async function importTestModule(name) {
   const { transpileModule, ModuleKind, ScriptTarget } = await import("typescript");
   const source = await readFile(new URL("../app/" + name + ".ts", import.meta.url), "utf8");
