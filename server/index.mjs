@@ -6,6 +6,7 @@ import path from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import {
+  listListeningQueues, saveListeningQueue, advanceListeningQueue, deleteListeningQueue,
   getProjectFocus, pickProjectFocus,
   listPlaybackNotes, savePlaybackNote, deletePlaybackNote,
   markImportVersion, listTasks, saveTask, completeTask,
@@ -379,6 +380,12 @@ const server = createServer(async (req, res) => {
     if (req.method === "OPTIONS") { res.writeHead(204, corsHeaders(req)); return res.end(); }
     if (!url.pathname.startsWith("/api/peer/") && !isOwnerApiRequest(req)) return sendJson(req, res, 403, { error: "This endpoint is available only through the owner gateway" });
     if (req.method === "GET" && url.pathname === "/api/health") return sendJson(req, res, 200, { ok: true, database: "sqlite", peerSync: true });
+    if (url.pathname === "/api/listening-queues") {
+      if (req.method === "GET") return sendJson(req,res,200,listListeningQueues());
+      if (req.method === "POST") return sendJson(req,res,201,saveListeningQueue(await readJson(req)));
+      if (req.method === "PUT") return sendJson(req,res,200,advanceListeningQueue(await readJson(req)));
+      if (req.method === "DELETE") return sendJson(req,res,200,deleteListeningQueue((await readJson(req)).id));
+    }
     if (url.pathname === "/api/project-focus" && req.method === "GET") return sendJson(req,res,200,getProjectFocus(url.searchParams.get("project")));
     if (url.pathname === "/api/project-focus" && req.method === "POST") return sendJson(req,res,200,pickProjectFocus(await readJson(req)));
     if (url.pathname === "/api/playback-notes" && req.method === "GET") return sendJson(req,res,200,listPlaybackNotes(url.searchParams.get("demo") || undefined));

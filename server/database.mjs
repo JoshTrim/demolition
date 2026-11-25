@@ -13,6 +13,31 @@ mkdirSync(mediaDirectory, { recursive: true });
 mkdirSync(path.dirname(databasePath), { recursive: true });
 
 const database = new DatabaseSync(databasePath);
+database.exec("CREATE TABLE IF NOT EXISTS listening_queues (id TEXT PRIMARY KEY, payload TEXT NOT NULL)");
+export function listListeningQueues() {
+  return database.prepare("SELECT payload FROM listening_queues ORDER BY rowid DESC").all().map(row => JSON.parse(row.payload));
+}
+export function saveListeningQueue(body) {
+  const invalid = message => { throw Object.assign(new Error(message), { statusCode:400 }); };
+  if (!body || typeof body.name !== "string" || !body.name.trim() || body.name.length > 100 || !Array.isArray(body.uuids) || body.uuids.length > 100000 || body.uuids.some(id => typeof id !== "string" || id.length > 100) || new Set(body.uuids).size !== body.uuids.length) invalid("Invalid listening queue");
+  if (!Number.isSafeInteger(body.cursor) || body.cursor < 0 || body.cursor > body.uuids.length) invalid("Invalid queue position");
+  const filters = body.filters || {};
+  if (typeof filters.project !== "string" || typeof filters.tag !== "string" || filters.project.length > 200 || filters.tag.length > 100 || typeof filters.unlistened !== "boolean") invalid("Invalid queue filters");
+  const id = body.id || randomUUID();
+  if (typeof id !== "string" || id.length > 100) invalid("Invalid queue ID");
+  const queue = { id, name:body.name.trim(), uuids:body.uuids, cursor:body.cursor, filters, updatedAt:Date.now() };
+  database.prepare("INSERT INTO listening_queues VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload").run(id, JSON.stringify(queue));
+  return queue;
+}
+export function advanceListeningQueue(body) {
+  const queue = listListeningQueues().find(queue => queue.id === body.id);
+  if (!queue) throw Object.assign(new Error("Queue not found"), { statusCode:404 });
+  return saveListeningQueue({ ...queue, cursor:body.cursor });
+}
+export function deleteListeningQueue(id) {
+  database.prepare("DELETE FROM listening_queues WHERE id = ?").run(String(id));
+  return { ok:true };
+}
 database.exec(`CREATE TABLE IF NOT EXISTS demo_attachments (
   id TEXT PRIMARY KEY, demo_uuid TEXT NOT NULL, name TEXT NOT NULL,
   kind TEXT NOT NULL, size INTEGER NOT NULL, created_at INTEGER NOT NULL

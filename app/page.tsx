@@ -4,6 +4,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import QRCode from "qrcode";
 import DemoSearch from "./demo-search";
+import ListenScore from "./listen-score";
+import { shuffledListenOrder } from "./listen-order";
+import ListeningQueues, { resumeQueue, type ListeningQueue } from "./listening-queues";
 import ProjectTracklists, { type TracklistVersion } from "./project-tracklists";
 import ProjectBuilder from "./project-builder";
 import ProjectFocus from "./project-focus";
@@ -659,7 +662,7 @@ function PhoneRemote({ token }: { token: string }) {
       <div className="phone-main-transport"><button disabled={!state?.active || !state.hasPrevious || sending} onClick={() => send({ type: "previous" })} aria-label="Previous track">←<small>Previous</small></button><button className="phone-play" disabled={!state?.active || sending} onClick={() => send({ type: "play-pause" })} aria-label={state?.playing ? "Pause desktop playback" : "Play desktop playback"}>{state?.playing ? "Ⅱ" : "▶"}</button><button disabled={!state?.active || !state.hasNext || sending} onClick={() => send({ type: "next" })} aria-label="Next track">→<small>Next</small></button></div>
     </section>
     <section className="phone-score" aria-label="Score this track">
-      <div><span>SCORE</span><strong>{Number(state?.score || 0) > 0 ? `+${state?.score}` : state?.score || 0}</strong><small>{state?.up || 0} up · {state?.down || 0} down</small></div>
+      <ListenScore key={`${state?.demoUuid}:${state?.index}:${state?.active}`} className="phone-score-summary" up={state?.up || 0} down={state?.down || 0} score={state?.score || 0}/>
       <div className="phone-votes"><button className={state?.vote === "down" ? "selected" : ""} aria-pressed={state?.vote === "down"} disabled={!state?.active || sending} onClick={() => send({ type: "down" })}><b>↓</b><span>Thumbs down</span></button><button className={state?.vote === "up" ? "selected" : ""} aria-pressed={state?.vote === "up"} disabled={!state?.active || sending} onClick={() => send({ type: "up" })}><b>↑</b><span>Thumbs up</span></button></div>
     </section>
     <button className="phone-skip" disabled={!state?.active || !state.hasNext || sending} onClick={() => send({ type: "skip" })}>Skip without rating <span>→</span></button>
@@ -832,6 +835,10 @@ export default function Home() {
   const [storageInfo, setStorageInfo] = useState<StorageInfo>({ usage: 0, quota: 0, persisted: false });
   const [storageProgress, setStorageProgress] = useState("");
   const [rapidMode, setRapidMode] = useState(false);
+  const [showListeningQueues, setShowListeningQueues] = useState(false);
+  const activeListeningQueue = useRef<{id:string; cursors:number[]; total:number} | undefined>(undefined);
+  const queueWrites = useRef<Promise<unknown>>(Promise.resolve());
+  const [queueSaveError, setQueueSaveError] = useState("");
   const [remoteToken, setRemoteToken] = useState("");
   const [remoteSession, setRemoteSession] = useState<RemoteSession>();
   const [showPhoneRemote, setShowPhoneRemote] = useState(false);
@@ -2117,12 +2124,10 @@ export default function Home() {
   }
 
   function startRapidListen(sourceDemos = demos) {
+    activeListeningQueue.current = undefined;
+    setQueueSaveError("");
     const playableDemos = sourceDemos.filter((demo) => demo.audioName);
-    const ids = [...playableDemos].sort((a, b) => {
-      const aStats = statsFor(a.id);
-      const bStats = statsFor(b.id);
-      return demoListenCount(a) - demoListenCount(b) || (aStats.lastAt ?? 0) - (bStats.lastAt ?? 0) || a.updatedAt - b.updatedAt;
-    }).map((demo) => demo.id);
+    const ids = shuffledListenOrder(playableDemos, demoListenCount).map((demo) => demo.id);
     if (!ids.length) { window.alert(sourceDemos === demos ? "Import some demos before starting listen mode." : "No matching demos have attached audio."); return; }
     setRapidPreloadUrl(undefined);
     setAudioUrl(undefined);
@@ -2132,6 +2137,23 @@ export default function Home() {
     setSelectedId(ids[0]);
     markDemoListened(ids[0]);
     setRapidMode(true);
+  }
+
+  function saveQueueProgress(index:number) {
+    const queue = activeListeningQueue.current;
+    if (!queue) return;
+    const cursor = queue.cursors[index] ?? queue.total;
+    queueWrites.current = queueWrites.current.catch(()=>undefined).then(()=>apiRequest("/api/listening-queues", {method:"PUT",body:JSON.stringify({id:queue.id,cursor})})).then(()=>setQueueSaveError(""),()=>setQueueSaveError("Queue progress could not be saved. Check the server before closing."));
+  }
+
+  function startSavedQueue(queue:ListeningQueue) {
+    const remaining = resumeQueue(queue,demos.filter(demo=>demo.audioName));
+    if (!remaining.length) return;
+    activeListeningQueue.current = {id:queue.id,cursors:remaining.map(item=>item.cursor),total:queue.uuids.length};
+    const ids = remaining.map(item=>item.track.id);
+    setRapidPreloadUrl(undefined);setAudioUrl(undefined);setRapidIds(ids);setRapidIndex(0);
+    resetRapidResponse();setSelectedId(ids[0]);markDemoListened(ids[0]);
+    setShowListeningQueues(false);setRapidMode(true);saveQueueProgress(0);
   }
 
   function markDemoListened(demoId: number) {
@@ -2409,6 +2431,7 @@ export default function Home() {
   function editTimedNote(note: TimedNote) {
     if (!account || note.authorId !== account.id) return;
     if (!rapidMode || rapidDemo?.id !== note.demoId) {
+      activeListeningQueue.current = undefined;
       resetRapidResponse();
       setRapidIds([note.demoId]);
       setRapidIndex(0);
@@ -2444,6 +2467,7 @@ export default function Home() {
   function previousRapid() {
     if (rapidIndex <= 0) return;
     const previousIndex = rapidIndex - 1;
+    saveQueueProgress(previousIndex);
     resetRapidResponse();
     const previousId = rapidIds[previousIndex];
     const previousAudio = rapidAudioCacheRef.current.get(previousId);
@@ -2456,6 +2480,7 @@ export default function Home() {
   function advanceRapid() {
     if (!rapidDemo) return;
     const nextIndex = rapidIndex + 1;
+    saveQueueProgress(nextIndex);
     if (nextIndex >= rapidIds.length) {
       setRapidMode(false);
       setImportNotice("Listening round complete.");
@@ -2954,7 +2979,7 @@ export default function Home() {
           <nav className="main-nav" aria-label="Music navigation">
             <button className={`nav-item ${view === "library" || view === "demo" ? "active" : ""}`} aria-current={view === "library" || view === "demo" ? "page" : undefined} onClick={() => { closeMobileMenu(); setSearch(""); setTagFilter("All tags"); setStatsFilters([]); setFilter("All"); selectProject("All demos"); }}><span>▦</span> Library <b>{demos.length}</b></button>
             <button className={`nav-item ${view === "search" ? "active" : ""}`} aria-current={view === "search" ? "page" : undefined} onClick={() => { closeMobileMenu(); setSearch(""); setStatsFilters([]); setView("search"); }}><span>⌕</span> Search & filter</button>
-            <button className="nav-item" onClick={() => { closeMobileMenu(); startRapidListen(); }}><span>▶</span> Listen & rate</button>
+            <button className="nav-item" onClick={() => { closeMobileMenu(); setShowListeningQueues(true); }}><span>▶</span> Listen & rate</button>
             <button className={`nav-item ${view === "revisit" ? "active" : ""}`} aria-current={view === "revisit" ? "page" : undefined} onClick={() => { closeMobileMenu(); setSearch(""); setTagFilter("All tags"); setStatsFilters([]); setFilter("All"); setProject("All demos"); setView("revisit"); }}><span>◌</span> Review queue <b>{revisitDemos.length}</b></button>
             <button className={`nav-item ${view === "projects" || view === "project" ? "active" : ""}`} aria-current={view === "projects" || view === "project" ? "page" : undefined} onClick={() => navigateWorkspace("projects")}><span>☷</span> Projects <b>{projects.length}</b></button>
             <button className={`nav-item ${view === "stats" ? "active" : ""}`} aria-current={view === "stats" ? "page" : undefined} onClick={() => navigateWorkspace("stats")}><span>▥</span> Statistics</button>
@@ -2979,6 +3004,8 @@ export default function Home() {
       </aside>
 
       <section className="content">
+        {showListeningQueues && <ListeningQueues demos={demos} listens={id=>demoListenCount(demos.find(demo=>demo.id===id)!)} request={options=>apiRequest("/api/listening-queues",options)} onClose={()=>setShowListeningQueues(false)} onQuick={()=>{setShowListeningQueues(false);startRapidListen();}} onStart={startSavedQueue}/>}
+        {queueSaveError && <p className="queue-save-error" role="alert">{queueSaveError}<button className="secondary-button" onClick={()=>saveQueueProgress(rapidIndex)}>Retry saving progress</button></p>}
         <header className="topbar"><div className="breadcrumb"><span>Workspace</span><i>/</i><strong>{currentTitle}</strong></div><div className="top-actions"><label className="search"><span>⌕</span><input aria-label={view === "feedback" ? "Search feedback" : "Search demos"} value={search} onChange={(event) => { setStatsFilters([]); setSearch(event.target.value); if (view !== "feedback" && view !== "sharing") setView("search"); }} placeholder={view === "feedback" ? "Search feedback" : "Search demos"} /></label><button className="avatar" aria-label="Open account" onClick={() => setShowAccount(true)}>{account?.displayName.slice(0, 2).toUpperCase() || "—"}</button></div></header>
         <div className="page-content">
           <div className="heading-row"><div><div className="eyebrow">{todayLabel || "TODAY"}</div><h1>{currentTitle}</h1><p className="lede">{view === "projects" ? "Choose a project to arrange tracklists and collect references." : view === "import" ? "Add audio bounces or complete sets. Original files remain untouched." : view === "tools" ? "Tags, audio analysis, storage and backups." : view === "demo" ? "Playback, project files, stems and feedback." : view === "search" ? "Combine text, tags, tempo, votes, and listens to find demos." : view === "feedback" ? <><strong>{feedbackItems.length}</strong> ratings and timed notes received from friends.</> : view === "sharing" ? <><strong>{directSharedDemoCount}</strong> demos shared directly with <strong>{sharedFriendCount}</strong> {sharedFriendCount === 1 ? "friend" : "friends"}.</> : view === "stats" ? <>{statsFilters.length ? "Filtered stats for" : "A catalogue overview of"} <strong>{statsFilteredDemos.length} demos</strong>, their lengths, tempos, and keys.</> : view === "revisit" ? `${revisitDemos.length} demos are queued, oldest first.` : view === "project" ? projectTab === "moodboard" ? "Collect visual, video, and audio references for this project." : "Move demos between the candidate pool and ordered tracklist." : <>Your library contains <strong>{demos.length} demos</strong>, with <strong>{revisitDemos.length}</strong> queued for review.</>}</p></div><div className="heading-actions">{view === "feedback" && <button className="primary-button" disabled={!friends.length || syncingFriendIds.length > 0} onClick={syncAllFriends}>{syncingFriendIds.length ? "Syncing…" : "Sync friends"}</button>}{view === "stats" && <><button className="secondary-button" onClick={() => { setDetectProgress(""); setShowBulkDetect(true); }}>⌁ Detect BPM</button><button className="secondary-button" onClick={() => { setKeyDetectProgress(""); setShowKeyDetect(true); }}>♬ Analyze keys</button><button className="primary-button stats-listen-button" disabled={!statsAuditionDemos.length} onClick={() => startRapidListen(statsAuditionDemos)}>{statsAuditionDemos.length ? `▶ Listen to ${statsFilters.length ? "filtered " : ""}${statsAuditionDemos.length}` : statsFilteredDemos.length ? "No local audio" : "No matching demos"}</button></>}{view === "revisit" && <button className="secondary-button" onClick={pickForMe}>Pick one for me</button>}{view === "project" && project !== "Unsorted" && <button className="settings-button" onClick={() => setShowProjectSettings(true)} aria-label={`Manage ${project}`}>⚙ Project settings</button>}{view === "project" && project !== "Unsorted" && projectTab === "moodboard" && <button className="secondary-button" onClick={() => setShowMedia(true)}>＋ Add reference</button>}{view === "projects" && <button className="primary-button" onClick={() => setShowProject(true)}>＋ New project</button>}{view === "library" && <button className="primary-button" onClick={() => navigateWorkspace("import")}>＋ Import demos</button>}</div></div>
@@ -3142,7 +3169,7 @@ export default function Home() {
         </div>
       </section>
 
-      {rapidMode && rapidDemo && <div className="rapid-backdrop"><section className="rapid-session" aria-label="Listen mode"><header><div><span className="eyebrow">LISTEN MODE</span><strong>{rapidIndex + 1} / {rapidIds.length}</strong></div><div className="rapid-header-actions"><button className="phone-remote-button" onClick={openPhoneRemote}>▦ Phone remote</button><button onClick={() => setRapidMode(false)} aria-label="End listen mode">×</button></div></header><div className="rapid-body"><div className="rapid-main"><div className="rapid-title"><div><h2>{rapidDemo.title}</h2><p>{rapidDemo.bpm ? `${rapidDemo.bpm} BPM` : "BPM unknown"} · {rapidDemo.key} · {rapidDemo.duration}</p></div><div className="rapid-title-actions"><button className={`favorite-button ${rapidDemo.favorite ? "active" : ""}`} aria-pressed={rapidDemo.favorite} onClick={() => toggleFavorite(rapidDemo.id)}>{rapidDemo.favorite ? "★ Favourite" : "☆ Favourite"}</button><select aria-label="Assign project" value={rapidDemo.project} onChange={(event) => changeRapidProject(event.target.value)}>{projectNames.map((name) => <option key={name}>{name}</option>)}</select></div></div>{rapidQuickTags}{rapidPreloadUrl && <audio ref={rapidPreloadAudioRef} className="rapid-preload-audio" src={rapidPreloadUrl} preload="auto" aria-hidden="true"><track kind="captions" src="data:text/vtt,WEBVTT" srcLang="en" label="Preloaded demo audio" /></audio>}{audioUrl ? <audio key={rapidDemo.id} ref={rapidAudioRef} className="rapid-audio-engine" src={audioUrl} onError={() => { setRapidPlaying(false); setPlaybackError("This audio copy could not be played by the browser."); }} onCanPlay={(event) => { if (event.currentTarget.paused) playRapidAudio(event.currentTarget); }} onEnded={(event) => handleRapidEnded(event.currentTarget)} onLoadedMetadata={(event) => handleRapidLoadedMetadata(event.currentTarget)} onDurationChange={(event) => handleRapidLoadedMetadata(event.currentTarget)} onPlay={() => { setRapidPlaying(true); setPlaybackError(""); }} onPause={() => setRapidPlaying(false)} onTimeUpdate={(event) => handleRapidTimeUpdate(event.currentTarget)} preload="auto"><track kind="captions" src="data:text/vtt,WEBVTT" srcLang="en" label="Demo audio" /></audio> : <div className="rapid-no-audio">{playbackError || "No local audio copy attached"}</div>}{rapidAnnotationTransport}<div className="rapid-vote-summary"><span>{rapidStats.up} up</span><span>{rapidStats.down} down</span><strong>Score {rapidStats.score > 0 ? `+${rapidStats.score}` : rapidStats.score}</strong></div><label className="rapid-note">Note for this listen<textarea value={rapidNote} onChange={(event) => updateRapidNote(event.target.value)} rows={3} placeholder="Optional note saved with your vote" /></label></div></div><footer><div className="rapid-controls"><button className="rapid-previous" disabled={!rapidIndex} onClick={previousRapid}><span>←</span> Previous <kbd>H</kbd></button><button className="thumb-down" aria-pressed={rapidDownSelected} onClick={() => recordListen("down")}><span>↓</span> Thumbs down <kbd>J</kbd></button><button className="thumb-up" aria-pressed={rapidUpSelected} onClick={() => recordListen("up")}><span>↑</span> Thumbs up <kbd>K</kbd></button><button className="rapid-next-track" aria-label="Skip without rating" onClick={advanceRapid}>Skip <span>→</span> <kbd>L</kbd></button></div></footer></section></div>}
+      {rapidMode && rapidDemo && <div className="rapid-backdrop"><section className="rapid-session" aria-label="Listen mode"><header><div><span className="eyebrow">LISTEN MODE</span><strong>{rapidIndex + 1} / {rapidIds.length}</strong></div><div className="rapid-header-actions"><button className="phone-remote-button" onClick={openPhoneRemote}>▦ Phone remote</button><button onClick={() => setRapidMode(false)} aria-label="End listen mode">×</button></div></header><div className="rapid-body"><div className="rapid-main"><div className="rapid-title"><div><h2>{rapidDemo.title}</h2><p>{rapidDemo.bpm ? `${rapidDemo.bpm} BPM` : "BPM unknown"} · {rapidDemo.key} · {rapidDemo.duration}</p></div><div className="rapid-title-actions"><button className={`favorite-button ${rapidDemo.favorite ? "active" : ""}`} aria-pressed={rapidDemo.favorite} onClick={() => toggleFavorite(rapidDemo.id)}>{rapidDemo.favorite ? "★ Favourite" : "☆ Favourite"}</button><select aria-label="Assign project" value={rapidDemo.project} onChange={(event) => changeRapidProject(event.target.value)}>{projectNames.map((name) => <option key={name}>{name}</option>)}</select></div></div>{rapidQuickTags}{rapidPreloadUrl && <audio ref={rapidPreloadAudioRef} className="rapid-preload-audio" src={rapidPreloadUrl} preload="auto" aria-hidden="true"><track kind="captions" src="data:text/vtt,WEBVTT" srcLang="en" label="Preloaded demo audio" /></audio>}{audioUrl ? <audio key={rapidDemo.id} ref={rapidAudioRef} className="rapid-audio-engine" src={audioUrl} onError={() => { setRapidPlaying(false); setPlaybackError("This audio copy could not be played by the browser."); }} onCanPlay={(event) => { if (event.currentTarget.paused) playRapidAudio(event.currentTarget); }} onEnded={(event) => handleRapidEnded(event.currentTarget)} onLoadedMetadata={(event) => handleRapidLoadedMetadata(event.currentTarget)} onDurationChange={(event) => handleRapidLoadedMetadata(event.currentTarget)} onPlay={() => { setRapidPlaying(true); setPlaybackError(""); }} onPause={() => setRapidPlaying(false)} onTimeUpdate={(event) => handleRapidTimeUpdate(event.currentTarget)} preload="auto"><track kind="captions" src="data:text/vtt,WEBVTT" srcLang="en" label="Demo audio" /></audio> : <div className="rapid-no-audio">{playbackError || "No local audio copy attached"}</div>}{rapidAnnotationTransport}<ListenScore key={`${rapidDemo.uuid}:${rapidIndex}`} up={rapidStats.up} down={rapidStats.down} score={rapidStats.score}/><label className="rapid-note">Note for this listen<textarea value={rapidNote} onChange={(event) => updateRapidNote(event.target.value)} rows={3} placeholder="Optional note saved with your vote" /></label></div></div><footer><div className="rapid-controls"><button className="rapid-previous" disabled={!rapidIndex} onClick={previousRapid}><span>←</span> Previous <kbd>H</kbd></button><button className="thumb-down" aria-pressed={rapidDownSelected} onClick={() => recordListen("down")}><span>↓</span> Thumbs down <kbd>J</kbd></button><button className="thumb-up" aria-pressed={rapidUpSelected} onClick={() => recordListen("up")}><span>↑</span> Thumbs up <kbd>K</kbd></button><button className="rapid-next-track" aria-label="Skip without rating" onClick={advanceRapid}>Skip <span>→</span> <kbd>L</kbd></button></div></footer></section></div>}
 
       {showPhoneRemote && <div className="modal-backdrop"><section className="modal phone-pair-modal" aria-label="Pair phone remote"><button type="button" className="modal-close" aria-label="Close dialog" onClick={() => setShowPhoneRemote(false)}>×</button><div className="eyebrow">LISTEN MODE REMOTE</div><h2>Control from your phone</h2><p>Scan this code. Playback stays on this computer while the phone controls transport and scoring.</p>{remoteQrData ? <img className="remote-qr" src={remoteQrData} alt="QR code for the phone remote" /> : <div className="remote-qr-loading">Generating code…</div>}<label>Phone-accessible app URL<input value={remoteBaseUrl} onChange={(event) => setRemoteBaseUrl(event.target.value)} placeholder="https://demolition.example.com" /></label>{/^(https?:\/\/)?(localhost|127\.0\.0\.1)(:|\/|$)/i.test(remoteBaseUrl) && <div className="remote-url-warning">localhost points back to the phone. Use your Demolition domain, LAN address, or WireGuard address.</div>}{remotePairingUrl && <div className="remote-direct-link"><input readOnly value={remotePairingUrl} aria-label="Phone remote link" /><button onClick={() => navigator.clipboard.writeText(remotePairingUrl).then(() => setRemoteStatus("Remote link copied."))}>Copy</button></div>}{remoteStatus && <div className="remote-pair-status" role="status">{remoteStatus}</div>}<div className="remote-pair-actions"><button className="secondary-button" onClick={() => setShowPhoneRemote(false)}>Keep running</button><button className="remote-end-button" disabled={!remoteSession} onClick={closePhoneRemote}>End remote</button></div><small className="remote-expiry">The pairing expires after eight hours. The phone receives track metadata only; it does not stream the audio file.</small></section></div>}
 

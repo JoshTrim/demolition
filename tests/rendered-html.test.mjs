@@ -8,6 +8,23 @@ import { promisify } from "node:util";
 
 const run = promisify(execFile);
 
+test("listen scores hide votes and totals until explicitly revealed", async () => {
+  const { transpileModule, ModuleKind, JsxEmit } = await import("typescript");
+  const { createElement } = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const source = await readFile(new URL("../app/listen-score.tsx", import.meta.url), "utf8");
+  const output = transpileModule(source, { compilerOptions: { module: ModuleKind.ESNext, jsx: JsxEmit.ReactJSX } }).outputText
+    .replaceAll('from "react"', `from ${JSON.stringify(import.meta.resolve("react"))}`)
+    .replaceAll('from "react/jsx-runtime"', `from ${JSON.stringify(import.meta.resolve("react/jsx-runtime"))}`);
+  const { default: ListenScore } = await import(`data:text/javascript;base64,${Buffer.from(output).toString("base64")}`);
+  for (const className of ["rapid-vote-summary", "phone-score-summary"]) {
+    const html = renderToStaticMarkup(createElement(ListenScore, { up:123, down:37, score:86, className }));
+    assert.match(html, /Reveal score/);
+    assert.match(html, /aria-expanded="false"/);
+    assert.doesNotMatch(html, /123|37|86|Hide score/);
+  }
+});
+
 test("production bundles both local UI fonts and their licenses", async () => {
   for (const name of ["press-start-2p", "geist-mono"]) {
     const font = await readFile(new URL(`../dist/client/fonts/${name}-latin.woff2`, import.meta.url));
@@ -43,6 +60,63 @@ async function importTestModule(name) {
   const js = transpileModule(source, { compilerOptions: { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 } }).outputText.replaceAll('from "fflate"', "from " + JSON.stringify(import.meta.resolve("fflate")));
   return import("data:text/javascript;base64," + Buffer.from(js).toString("base64"));
 }
+test("listen mode shuffles each session, with unlistened demos first and no mutations or repeats", async () => {
+  const { shuffledListenOrder } = await importTestModule("listen-order");
+  const tracks = [{ id:1, listens:4 }, { id:2, listens:0 }, { id:3, listens:1 }, { id:4, listens:0 }];
+  const original = structuredClone(tracks);
+  const order = shuffledListenOrder(tracks, track => track.listens, () => 0);
+  assert.deepEqual(order.map(track => track.id), [2, 4, 3, 1]);
+  assert.deepEqual(tracks, original);
+  assert.equal(new Set(order.map(track => track.id)).size, tracks.length);
+  assert.notDeepEqual(shuffledListenOrder(tracks, track => track.listens, () => 0.999).map(track => track.id), order.map(track => track.id));
+  assert.deepEqual(shuffledListenOrder([], () => 0), []);
+  assert.deepEqual(shuffledListenOrder([tracks[0]], track => track.listens), [tracks[0]]);
+});
+test("A/B masters stay clock-aligned and switches only ramp gain", async () => {
+  const { MasterComparison } = await importTestModule("master-comparison");
+  const starts = [], stops = [], ramps = [], holds = [];
+  const context = {
+    currentTime: 10, destination: {}, async resume() {}, async close() {},
+    createBufferSource() { return { connect() {}, disconnect() {}, start(...args) { starts.push(args); }, stop(...args) { stops.push(args); } }; },
+    createGain() { return { connect() {}, disconnect() {}, gain: { setValueAtTime() {}, cancelScheduledValues(time) { holds.push(time); }, linearRampToValueAtTime(...args) { ramps.push(args); } } }; },
+  };
+  const player = new MasterComparison(context);
+  player.setBuffers({ duration: 20 }, { duration: 30 });
+  await player.play();
+  assert.deepEqual(starts, [[10.02, 0], [10.02, 0]]);
+  context.currentTime = 12;
+  const position = player.position, stopCount = stops.length;
+  player.select("B"); player.select("A"); player.select("B");
+  assert.equal(player.position, position);
+  assert.equal(starts.length, 2, "switching must not create/restart sources");
+  assert.equal(stops.length, stopCount, "switching must not stop sources");
+  assert.deepEqual(ramps.slice(-2), [[0, 12.005], [1, 12.005]]);
+  assert.deepEqual(holds, Array(6).fill(12));
+  player.seek(5);
+  assert.deepEqual(starts.slice(-2), [[12.02, 5], [12.02, 5]]);
+  player.pause();
+  assert.equal(player.position, 5);
+  context.currentTime = 15;
+  await player.play();
+  assert.deepEqual(starts.slice(-2), [[15.02, 5], [15.02, 5]]);
+  assert.equal(player.duration, 20);
+  player.dispose();
+  await player.play();
+  assert.equal(player.playing, false);
+});
+
+test("A/B pending resume is cancelled on pause or disposal", async () => {
+  const { MasterComparison } = await importTestModule("master-comparison");
+  let resume;
+  const context = { currentTime: 0, resume: () => new Promise(resolve => { resume = resolve; }), async close() {}, createBufferSource() { throw Error("Must not start after cancellation"); } };
+  for (const action of ["pause", "dispose"]) {
+    const player = new MasterComparison(context);
+    player.setBuffers({ duration: 10 }, { duration: 10 });
+    const pending = player.play();
+    player[action](); resume(); await pending;
+    assert.equal(player.playing, false);
+  }
+});
 test("single and parent set imports classify audio and preserve project paths in a real ZIP", async () => {
   const { scanSets, archiveProject, defaultStemVersion, setFingerprint } = await importTestModule("set-files");
   const { unzipSync } = await import("fflate");

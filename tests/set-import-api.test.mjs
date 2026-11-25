@@ -36,6 +36,10 @@ test("set import recovery retains master and attachments across server restart",
     await request("/api/audio/1","POST",wav,{"x-file-name":"master.wav"});
     const payload={label:"Set import",notes:"Fixture",importKey:"a".repeat(64)+":"};
     const version=await (await request("/api/demos/import-demo/file-versions","POST",payload)).json();
+    const queue=await (await request("/api/listening-queues","POST",{name:"Unheard session",uuids:["import-demo","removed-demo"],cursor:0,filters:{project:"",tag:"",unlistened:true}})).json();
+    await request("/api/listening-queues","PUT",{id:queue.id,cursor:1});
+    const invalidQueue=await fetch("http://127.0.0.1:"+port+"/api/listening-queues",{method:"PUT",headers:{"X-Demolition-Proxy-Token":"test-token","content-type":"application/json"},body:JSON.stringify({id:queue.id,cursor:-1})});
+    assert.equal(invalidQueue.status,400);
     await request("/api/demos/import-demo/attachments?kind=stem&version="+version.id,"POST",wav,{"x-file-name":"drums.wav"});
     const project=zipSync({"Project/session.als":new TextEncoder().encode("test project")});
     await request("/api/demos/import-demo/attachments?kind=project&version="+version.id,"POST",project,{"x-file-name":"project.zip"});
@@ -44,6 +48,10 @@ test("set import recovery retains master and attachments across server restart",
     const savedNotes=await (await request("/api/playback-notes","POST",note)).json();
     assert.equal(savedNotes[0].track_id,stem.id);
     await stop();await start();
+    const queues=await (await request("/api/listening-queues")).json();
+    assert.equal(queues[0].cursor,1);assert.deepEqual(queues[0].uuids,["import-demo","removed-demo"]);
+    await request("/api/listening-queues","DELETE",{id:queue.id});
+    assert.equal((await (await request("/api/listening-queues")).json()).length,0);
     const retry=await (await request("/api/demos/import-demo/file-versions","POST",payload)).json();
     assert.equal(retry.id,version.id);
     const restoredNotes=await (await request("/api/playback-notes?demo=import-demo")).json();

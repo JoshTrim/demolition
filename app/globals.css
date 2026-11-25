@@ -1,5 +1,22 @@
 @import "tailwindcss";
 
+.rapid-vote-summary { flex-wrap:wrap; }
+.phone-score-summary { display:flex; flex-wrap:wrap; align-items:center; gap:12px; }
+.phone-score-summary .secondary-button { width:100%; }
+
+.listening-queues { width:min(760px,100%); }
+.listening-queues form { padding-block:24px; margin-block:24px; border-block:1px solid var(--px-border); }
+.listening-queues h3 { margin-bottom:16px; font:16px/1.6 var(--px-font-reading); }
+.listening-queues .queue-check { display:flex; gap:12px; align-items:center; text-transform:none; font:14px/1.6 var(--px-font-reading); }
+.listening-queues .queue-check input { margin:0; }
+.saved-queue-list { display:grid; gap:16px; }
+.saved-queue-list article { min-width:0; padding:16px; border:1px solid var(--px-border); background:var(--px-bg-deep); }
+.saved-queue-list h4 { overflow-wrap:anywhere; font-size:16px; margin-bottom:8px; }
+.saved-queue-list p { margin-bottom:12px; }
+.saved-queue-list .heading-actions { display:flex; }
+.queue-save-error { position:fixed; z-index:20; bottom:12px; left:16px; right:16px; padding:16px; color:var(--px-warning); background:var(--px-bg-deep); border:2px solid var(--px-warning); }
+@media(max-width:720px) { .listening-queues .modal-fields { grid-template-columns:1fr; }.saved-queue-list .heading-actions>button { flex:1 1 auto; } }
+
 /* Bundled fonts: identical in development, production and offline installs. */
 @font-face {
   font-family:"Demolition Pixel";
