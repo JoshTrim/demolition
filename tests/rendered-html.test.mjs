@@ -8,6 +8,51 @@ import { promisify } from "node:util";
 
 const run = promisify(execFile);
 
+test("tracklist audition exposes a compact transport and seek timeline without mounting the full editor", async () => {
+  const { transpileModule, ModuleKind, JsxEmit, ScriptTarget } = await import("typescript");
+  const { createElement } = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const source = await readFile(new URL("../app/tracklist-player.tsx", import.meta.url), "utf8");
+  const trimSource = await readFile(new URL("../app/trim-controls.tsx", import.meta.url), "utf8");
+  const trimOutput = transpileModule(trimSource, { compilerOptions: { module:ModuleKind.ESNext, jsx:JsxEmit.ReactJSX, target:ScriptTarget.ES2022 } }).outputText.replaceAll('from "react/jsx-runtime"', `from ${JSON.stringify(import.meta.resolve("react/jsx-runtime"))}`);
+  const output = transpileModule(source, { compilerOptions: { module: ModuleKind.ESNext, jsx: JsxEmit.ReactJSX, target:ScriptTarget.ES2022 } }).outputText
+    .replaceAll('from "./trim-controls"', `from "data:text/javascript;base64,${Buffer.from(trimOutput).toString("base64")}"`)
+    .replaceAll('from "react"', `from ${JSON.stringify(import.meta.resolve("react"))}`)
+    .replaceAll('from "react/jsx-runtime"', `from ${JSON.stringify(import.meta.resolve("react/jsx-runtime"))}`);
+  const { default: Player } = await import(`data:text/javascript;base64,${Buffer.from(output).toString("base64")}`);
+  const html=renderToStaticMarkup(createElement(Player,{src:"/api/audio/1",onEnded(){},onStarted(){},onTrim(){}},createElement("p",null,"Full editor sentinel")));
+  assert.match(html,/Play tracklist playback/);
+  assert.match(html,/Seek tracklist playback/);
+  assert.match(html,/Seek back 10 seconds/);
+  assert.match(html,/Seek forward 10 seconds/);
+  assert.match(html,/Versions, stems &amp; timed notes/);
+  assert.match(html,/Start \(seconds\)/);
+  assert.match(html,/End \(seconds\)/);
+  assert.match(html,/Set start to playhead/);
+  assert.match(html,/Set end to playhead/);
+  assert.doesNotMatch(html,/Full editor sentinel/);
+});
+
+test("phone tag editor exposes applied tags, creation and searchable choices", async () => {
+  const { transpileModule, ModuleKind, JsxEmit, ScriptTarget } = await import("typescript");
+  const { createElement } = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const source = await readFile(new URL("../app/phone-tags.tsx", import.meta.url), "utf8");
+  const output = transpileModule(source, { compilerOptions: { module: ModuleKind.ESNext, jsx: JsxEmit.ReactJSX, target:ScriptTarget.ES2022 } }).outputText
+    .replaceAll('from "react"', `from ${JSON.stringify(import.meta.resolve("react"))}`)
+    .replaceAll('from "react/jsx-runtime"', `from ${JSON.stringify(import.meta.resolve("react/jsx-runtime"))}`);
+  const { default: PhoneTags } = await import(`data:text/javascript;base64,${Buffer.from(output).toString("base64")}`);
+  const props = { tags:["Session"], available:["session","Ambient"], onSet:async()=>true, disabled:false };
+  const html = renderToStaticMarkup(createElement(PhoneTags, props));
+  assert.match(html, /Remove tag Session/);
+  assert.match(html, /Apply tag Ambient/);
+  assert.doesNotMatch(html, /Apply tag session/);
+  assert.match(html, /Create or apply a tag/);
+  assert.match(html, /Find a tag/);
+  const disabled = renderToStaticMarkup(createElement(PhoneTags, {...props,disabled:true}));
+  assert.match(disabled, /disabled=""[^>]*aria-label="Remove tag Session"/);
+});
+
 test("listen scores hide votes and totals until explicitly revealed", async () => {
   const { transpileModule, ModuleKind, JsxEmit } = await import("typescript");
   const { createElement } = await import("react");
@@ -294,6 +339,10 @@ test("uses the local SQLite and managed-file backend", async () => {
     database.sendRemoteCommand(remote.token, { type: "add-note", demoUuid: "demo-one", note: "Shorten the intro" });
     pending = database.getRemoteSession(remote.token, 2);
     if (pending.commands.length !== 1 || pending.commands[0].command.demoUuid !== "demo-one" || pending.commands[0].command.note !== "Shorten the intro") process.exit(1);
+    database.sendRemoteCommand(remote.token, { type: "set-tag", demoUuid: "demo-one", tag: "Needs drums", applied: true });
+    database.sendRemoteCommand(remote.token, { type: "set-tag", demoUuid: "demo-one", tag: "Session", applied: false });
+    pending = database.getRemoteSession(remote.token, 3);
+    if(pending.commands.length !== 2 || pending.commands[0].command.tag !== "Needs drums" || !pending.commands[0].command.applied || pending.commands[1].command.applied !== false) process.exit(1);
     database.closeRemoteSession(remote.token);
     try { database.getRemoteSession(remote.token); process.exit(1); } catch {}
     database.removeDemo("demo-one");

@@ -1,0 +1,8 @@
+"use client";
+export default function TrimControls({duration,start,end,position,onChange,onPreview}:{duration:number;start:number;end:number;position:number;onChange:(range:{start:number;end:number})=>void;onPreview?:()=>void}) {
+  function change(kind:"start"|"end",value:number){if(!Number.isFinite(value)||!duration)return;onChange(kind==="start"?{start:Math.max(0,Math.min(value,end-0.1)),end}:{start,end:Math.max(start+0.1,Math.min(value,duration))});}
+  return <fieldset className="trim-controls"><legend>Trim points</legend><div>
+    <label>Start (seconds)<input aria-label="Start (seconds)" type="number" min={0} max={Math.max(0,end-0.1)} step="0.1" disabled={!duration} value={Math.round(start*10)/10} onChange={event=>change("start",Number(event.target.value))}/><button type="button" className="secondary-button" disabled={!duration} onClick={()=>change("start",position)}>Set start to playhead</button></label>
+    <label>End (seconds)<input aria-label="End (seconds)" type="number" min={start+0.1} max={duration} step="0.1" disabled={!duration} value={Math.round(end*10)/10} onChange={event=>change("end",Number(event.target.value))}/><button type="button" className="secondary-button" disabled={!duration} onClick={()=>change("end",position)}>Set end to playhead</button></label>
+    </div><div className="heading-actions">{onPreview&&<button type="button" className="secondary-button" disabled={!duration} onClick={onPreview}>Play trimmed section</button>}<button type="button" className="secondary-button" disabled={!duration} onClick={()=>onChange({start:0,end:duration})}>Reset trim</button></div><small>Non-destructive. Trim points are saved with the demo.</small></fieldset>;
+}

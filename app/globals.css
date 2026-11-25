@@ -1,5 +1,24 @@
 @import "tailwindcss";
 
+.tracklist-player { min-width:0; padding:16px; background:var(--px-bg-deep); border:1px solid var(--px-border); }
+.tracklist-transport { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.tracklist-transport output { margin-left:auto; color:var(--px-text-soft); font:13px var(--px-font-reading); font-variant-numeric:tabular-nums; }
+.tracklist-live-timeline { position:relative; height:48px; margin-top:8px; }
+.tracklist-progress { position:absolute; inset:16px 0; border:1px solid var(--px-border); background:var(--px-surface-raised); pointer-events:none; }
+.tracklist-progress span { display:block; height:100%; background:var(--px-accent-2); }
+.tracklist-progress i { position:absolute; top:-6px; bottom:-6px; width:2px; background:var(--px-accent); transform:translateX(-1px); }
+.tracklist-live-timeline input { position:absolute; inset:0; width:100%; height:48px; margin:0; opacity:0; cursor:pointer; }
+.tracklist-live-timeline:focus-within { outline:2px solid var(--px-accent); outline-offset:2px; }
+.tracklist-player>details { margin-top:8px; border-top:1px solid var(--px-border); }
+.tracklist-player>details>summary { font:12px/1.6 var(--px-font-reading); padding:12px 0; }
+.tracklist-player [role=alert] { font-size:13px; color:var(--px-warning); }
+.tracklist-audition .timeline-scroll { max-height:220px; }
+.tracklist-audition .lane-rail { min-height:48px; height:48px; }
+.tracklist-audition .playback-timeline { margin:12px 0; }
+.tracklist-audition .playback-timeline>header { padding:12px; }
+.tracklist-audition .timeline-range { gap:8px; }
+@media(max-width:720px) { .tracklist-player { padding:12px; }.tracklist-transport output { flex:1 1 100%; margin:4px 0 0; }.tracklist-audition>header h3 { overflow-wrap:anywhere; font-size:14px; } }
+
 .rapid-vote-summary { flex-wrap:wrap; }
 .phone-score-summary { display:flex; flex-wrap:wrap; align-items:center; gap:12px; }
 .phone-score-summary .secondary-button { width:100%; }
@@ -1829,3 +1848,56 @@ input[type=file]::file-selector-button {
 @media(prefers-reduced-motion:reduce) {
   *,*::before,*::after { scroll-behavior:auto!important; animation:none!important; transition:none!important; }
 }
+
+/* Phone remote: one compact transport, then separate editing panels. */
+.phone-remote { max-width:600px; margin:0 auto; gap:12px; padding:16px 16px max(24px,env(safe-area-inset-bottom)); }
+.phone-remote::after { opacity:.12; }
+.phone-remote>header { min-height:44px; }
+.phone-now-playing { min-height:0; padding:20px; }
+.phone-now-playing h1 { font-size:clamp(16px,4.8vw,22px); line-height:1.65; margin:12px 0; }
+.phone-now-playing p,.phone-time { font:13px/1.6 var(--px-font-reading); }
+.phone-transport { padding:16px; }
+.phone-main-transport button { min-height:60px; }
+.phone-main-transport button small { font:11px var(--px-font-reading); text-transform:none; }
+.phone-nudge button { min-height:44px; font:12px var(--px-font-reading); }
+.phone-score { display:flex; flex-direction:column; padding:16px; gap:16px; }
+.phone-score .phone-votes { order:-1; }
+.phone-score .phone-votes button { min-height:80px; }
+.phone-score .phone-votes button span { font:12px/1.5 var(--px-font-reading); text-transform:none; }
+.phone-score>div.phone-score-summary { flex-direction:row; flex-wrap:wrap; gap:12px; align-items:center; justify-content:flex-start; background:none; border:0; padding:0; }
+.phone-score>div.phone-score-summary span { font:12px var(--px-font-reading); }
+.phone-score>div.phone-score-summary strong { font:14px var(--px-font-reading); text-shadow:none; margin:0; }
+.phone-score-summary .secondary-button { width:auto; flex:1 1 auto; }
+.phone-remote .phone-tags,.phone-remote .phone-note { border:1px solid var(--px-border-strong); background:var(--px-surface); padding:16px; margin:0; min-width:0; }
+.phone-remote .phone-tags h2,.phone-remote .phone-note h2 { font:12px/1.7 var(--px-font-display); color:var(--px-text); margin:0; }
+.phone-tags>header { display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; gap:12px; }
+.phone-tags>header>span { color:var(--px-text-muted); font-size:12px; }
+.phone-tag-chips,.phone-tag-options { display:flex; flex-wrap:wrap; gap:8px; }
+.phone-tag-chips { margin-bottom:16px; }
+.phone-tag-chips button,.phone-tag-options button { min-height:44px; max-width:100%; overflow-wrap:anywhere; padding:10px 12px; border:1px solid var(--px-accent-2); background:var(--px-bg-deep); color:var(--px-text); font:13px/1.6 var(--px-font-reading); text-align:left; }
+.phone-tag-chips button { display:flex; align-items:center; gap:12px; }
+.phone-tag-chips button span { color:var(--px-accent-2); font-size:18px; }
+.phone-tags label { display:grid; gap:8px; font-size:13px; }
+.phone-tags form label>div { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; margin-top:8px; }
+.phone-tags input { width:100%; min-width:0; min-height:44px; padding:10px; color:var(--px-text); border:1px solid var(--px-border-strong); background:var(--px-bg-deep); font:16px var(--px-font-reading); }
+.phone-tags details { border-top:1px solid var(--px-border); margin-top:16px; padding-top:8px; }
+.phone-tags summary { min-height:44px; padding:12px 0; cursor:pointer; font-size:13px; color:var(--px-text-soft); }
+.phone-tags details label { margin:8px 0 12px; }
+.phone-tag-options { max-height:240px; overflow:auto; }
+.phone-tags p { color:var(--px-text-muted); font:12px/1.6 var(--px-font-reading); margin:8px 0 0; }
+.phone-remote .phone-note label { margin:16px 0; font-size:13px; }
+.phone-remote .phone-note textarea { margin-top:8px; padding:12px; border:1px solid var(--px-border-strong); background:var(--px-bg-deep); color:var(--px-text); }
+.phone-note>.primary-button { width:100%; }
+.phone-remote .phone-command-error { color:var(--px-warning); border:1px solid var(--px-warning); padding:12px; font-size:13px; }
+.phone-remote>footer { font-size:12px; margin-top:4px; }
+@media(max-width:370px) { .phone-remote { padding-inline:12px; }.phone-tags form label>div { grid-template-columns:minmax(0,1fr); } }
+.trim-controls { min-width:0; border:1px solid var(--px-border); padding:12px; margin:12px 0; }
+.trim-controls legend { color:var(--px-accent-2); padding-inline:8px; font:12px var(--px-font-reading); }
+.trim-controls>div:first-of-type { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+.trim-controls label { display:grid; gap:8px; margin:0; color:var(--px-text-soft); font:12px var(--px-font-reading); }
+.trim-controls input { width:100%; min-width:0; min-height:44px; padding:8px; border:1px solid var(--px-border-strong); background:var(--px-bg-deep); color:var(--px-text); font:16px var(--px-font-reading); }
+.trim-controls .heading-actions { display:flex; margin:12px 0; }
+.trim-controls small { color:var(--px-text-muted); font:11px/1.6 var(--px-font-reading); }
+.tracklist-player>.phone-tags { border-top:1px solid var(--px-border); padding:16px 0; }
+.listen-trim-editor summary { min-height:44px; padding:12px 0; color:var(--px-text-soft); cursor:pointer; font-size:12px; }
+@media(max-width:430px) { .trim-controls>div:first-of-type { grid-template-columns:1fr; } }

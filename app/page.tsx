@@ -5,9 +5,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import QRCode from "qrcode";
 import DemoSearch from "./demo-search";
 import ListenScore from "./listen-score";
+import PhoneTags from "./phone-tags";
 import { shuffledListenOrder } from "./listen-order";
 import ListeningQueues, { resumeQueue, type ListeningQueue } from "./listening-queues";
 import ProjectTracklists, { type TracklistVersion } from "./project-tracklists";
+import TracklistPlayer from "./tracklist-player";
+import TrimControls from "./trim-controls";
 import ProjectBuilder from "./project-builder";
 import ProjectFocus from "./project-focus";
 import DemoTasks, { type Task } from "./demo-tasks";
@@ -602,7 +605,7 @@ function PhoneRemote({ token }: { token: string }) {
   const [sending, setSending] = useState(false);
   const [seeking, setSeeking] = useState(false);
   const [seekDraft, setSeekDraft] = useState(0);
-  const [tagDraft, setTagDraft] = useState("");
+  const [commandError, setCommandError] = useState("");
   const [noteDraft, setNoteDraft] = useState<{ demoUuid: string; title: string; text: string }>();
   const [noteStatus, setNoteStatus] = useState("");
 
@@ -629,13 +632,14 @@ function PhoneRemote({ token }: { token: string }) {
   async function send(command: RemoteCommand) {
     if (sending) return;
     setSending(true);
+    setCommandError("");
     try {
       const next = await apiRequest<RemoteSession>(`/api/remote/sessions/${encodeURIComponent(token)}/commands`, { method: "POST", body: JSON.stringify(command) });
       setSession(next);
       setError("");
       return true;
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "The command could not be sent.");
+      setCommandError(reason instanceof Error ? reason.message : "The command could not be sent.");
       return false;
     } finally {
       setSending(false);
@@ -666,6 +670,8 @@ function PhoneRemote({ token }: { token: string }) {
       <div className="phone-votes"><button className={state?.vote === "down" ? "selected" : ""} aria-pressed={state?.vote === "down"} disabled={!state?.active || sending} onClick={() => send({ type: "down" })}><b>↓</b><span>Thumbs down</span></button><button className={state?.vote === "up" ? "selected" : ""} aria-pressed={state?.vote === "up"} disabled={!state?.active || sending} onClick={() => send({ type: "up" })}><b>↑</b><span>Thumbs up</span></button></div>
     </section>
     <button className="phone-skip" disabled={!state?.active || !state.hasNext || sending} onClick={() => send({ type: "skip" })}>Skip without rating <span>→</span></button>
+    {(error||commandError)&&<p className="phone-command-error" role="alert">{commandError||error}</p>}
+    <PhoneTags key={state?.demoUuid} tags={state?.tags||[]} available={state?.availableTags||[]} disabled={!state?.active||sending} onSet={(tag,applied)=>send({type:"set-tag",demoUuid:state?.demoUuid,tag,applied})}/>
     <form className="phone-note" onSubmit={async (event) => {
       event.preventDefault();
       if (!noteDraft?.text.trim()) return;
@@ -674,7 +680,7 @@ function PhoneRemote({ token }: { token: string }) {
         setNoteStatus("Note sent to desktop for saving.");
       }
     }}>
-      <label className="rapid-note">Note for {noteDraft?.title || state?.title || "this demo"}
+      <h2>Notes</h2><label className="rapid-note">Note for {noteDraft?.title || state?.title || "this demo"}
         <textarea rows={4} maxLength={5000} placeholder="Add a note without rating" value={noteDraft?.text || ""} disabled={sending || (!noteDraft && !state?.active)} onChange={(event) => {
           setNoteStatus("");
           setNoteDraft({ demoUuid: noteDraft?.demoUuid || state?.demoUuid || "", title: noteDraft?.title || state?.title || "", text: event.target.value });
@@ -682,20 +688,8 @@ function PhoneRemote({ token }: { token: string }) {
       </label>
       <button className="primary-button" disabled={sending || !noteDraft?.demoUuid || !noteDraft.text.trim()} type="submit">Add note</button>
       {noteStatus && <p role="status">{noteStatus}</p>}
-      {error && <p role="alert">{error}</p>}
     </form>
     <footer>Audio remains on the computer.</footer>
-    <section className="rapid-tags" aria-label="Track tags">
-      <div className="rapid-tags-head"><span>TAGS</span><small>Tap to apply or remove</small></div>
-      <div className="rapid-tag-list">{(state?.availableTags || []).map((tag) => {
-        const applied = (state?.tags || []).some((name) => name.toLocaleLowerCase() === tag.toLocaleLowerCase());
-        return <button key={tag} aria-pressed={applied} className={applied ? "selected" : ""} disabled={!state?.active || sending} onClick={() => send({ type: "set-tag", demoUuid: state?.demoUuid, tag, applied: !applied })}>{applied ? "✓ " : "+ "}{tag}</button>;
-      })}</div>
-      <form className="rapid-tag-create" onSubmit={(event) => { event.preventDefault(); const [tag] = parseTags(tagDraft); if (tag) void send({ type: "set-tag", demoUuid: state?.demoUuid, tag, applied: true }); }}>
-        <input aria-label="New track tag" placeholder="New tag" maxLength={100} value={tagDraft} onChange={(event) => setTagDraft(event.target.value)} disabled={!state?.active} />
-        <button disabled={!state?.active || sending || !tagDraft.trim()} type="submit">Add tag</button>
-      </form>
-    </section>
   </main>;
 }
 
@@ -1519,6 +1513,7 @@ export default function Home() {
         }} />}
       </div>
       <div className="trim-readout"><span>IN <b>{formatDuration(rapidTrim.start)}</b></span>{rapidHasTrim && <button onClick={resetRapidTrim}>Reset trim</button>}<span>OUT <b>{formatDuration(rapidTrim.end)}</b></span></div>
+      <details className="listen-trim-editor"><summary>Edit trim points</summary><TrimControls duration={rapidDuration} start={rapidTrim.start} end={rapidTrim.end} position={rapidCurrentTime} onChange={range=>{setTrimDraft(range);persistRapidTrim(range);}}/></details>
       {timedNoteRange && <form className="timed-note-editor" onSubmit={saveTimedNote}>
         <div><b>{editingTimedNoteUuid ? "EDIT " : ""}{formatDuration(timedNoteRange.start)}–{formatDuration(timedNoteRange.end)}</b><button type="button" onClick={cancelTimedNoteEdit}>Cancel</button></div>
         <textarea value={timedNoteDraft} onChange={(event) => setTimedNoteDraft(event.target.value)} rows={2} placeholder="What applies to this section?" />
@@ -2160,6 +2155,14 @@ export default function Home() {
     setDemos((current) => current.map((demo) => demo.id === demoId ? { ...demo, listenCount: (demo.listenCount ?? statsFor(demoId).count) + 1 } : demo));
   }
 
+  async function editAuditionTag(id:number,tag:string,applied:boolean) {
+    const [entered]=parseTags(tag);if(!entered)return false;
+    const name=tags.find(item=>item.name.toLocaleLowerCase()===entered.toLocaleLowerCase())?.name||entered;
+    if(applied)setTags(current=>mergeTags(current,[name]));
+    setDemos(current=>current.map(demo=>demo.id===id?{...demo,tags:[...demo.tags.filter(value=>value.toLocaleLowerCase()!==name.toLocaleLowerCase()),...(applied?[name]:[])],updatedAt:Date.now()}:demo));
+    return true;
+  }
+
   async function openPhoneRemote() {
     setShowPhoneRemote(true);
     setRemoteStatus("Preparing phone remote…");
@@ -2534,14 +2537,9 @@ export default function Home() {
         if (note && command.demoUuid) setDemos((current) => current.map((demo) => demo.uuid === command.demoUuid ? { ...demo, note: [demo.note, note].filter(Boolean).join("\n\n"), updatedAt: Date.now() } : demo));
         return;
       }
-      if (!rapidMode) return;
-      if (command.type === "play-pause") toggleRapidPlayback();
-      else if (command.type === "previous") previousRapid();
-      else if (command.type === "next" || command.type === "skip") advanceRapid();
-      else if (command.type === "up") recordListen("up");
-      else if (command.type === "down") recordListen("down");
-      else if (command.type === "seek" && Number.isFinite(command.seconds)) seekRapid(Number(command.seconds));
-      else if (command.type === "set-tag" && command.demoUuid === rapidDemo?.uuid && command.tag) {
+      // Tag edits target the track shown when tapped, even if playback advances
+      // before the desktop receives the command.
+      if (command.type === "set-tag" && command.demoUuid && command.tag) {
         const [entered] = parseTags(command.tag);
         if (!entered) return;
         const name = tags.find((tag) => tag.name.toLocaleLowerCase() === entered.toLocaleLowerCase())?.name || entered;
@@ -2551,7 +2549,15 @@ export default function Home() {
           const remaining = demo.tags.filter((tag) => tag.toLocaleLowerCase() !== name.toLocaleLowerCase());
           return { ...demo, tags: command.applied ? [...remaining, name] : remaining, updatedAt: Date.now() };
         }));
+        return;
       }
+      if (!rapidMode) return;
+      if (command.type === "play-pause") toggleRapidPlayback();
+      else if (command.type === "previous") previousRapid();
+      else if (command.type === "next" || command.type === "skip") advanceRapid();
+      else if (command.type === "up") recordListen("up");
+      else if (command.type === "down") recordListen("down");
+      else if (command.type === "seek" && Number.isFinite(command.seconds)) seekRapid(Number(command.seconds));
     };
   });
 
@@ -3015,7 +3021,7 @@ export default function Home() {
           {view === "project" && <button className="text-button" onClick={() => navigateWorkspace("projects")}>← All projects</button>}
           {view === "project" && project !== "Unsorted" && <div className="project-tabs" role="tablist" aria-label={`${project} project sections`}><button role="tab" aria-selected={projectTab === "tracklist"} className={projectTab === "tracklist" ? "active" : ""} onClick={() => setProjectTab("tracklist")}><span>☷</span> Tracklists <b>{projectVersions.length + 1}</b></button><button role="tab" aria-selected={projectTab === "moodboard"} className={projectTab === "moodboard" ? "active" : ""} onClick={() => setProjectTab("moodboard")}><span>▦</span> Moodboard <b>{projectMedia.length}</b></button></div>}
           {view === "project" && project !== "Unsorted" && projectTab === "tracklist" && <ProjectFocus key={"focus:"+project} project={project} tracks={demos.filter(d => d.project === project && d.ownerId === account?.id)} order={projectOrder} listName={selectedTracklist?.name ?? "Main tracklist"} request={apiRequest} onOpen={openDemo} />}
-          {view === "project" && project !== "Unsorted" && projectTab === "tracklist" && <ProjectTracklists key={project} mainIds={orders[project] ?? []} lists={projectVersions} selected={selectedTracklist?.id ?? ""} onSelect={(id) => setSelectedTracklists((current) => ({ ...current, [project]: id }))} onChange={(tracklists) => setProjects((current) => current.map((item) => item.name === project ? { ...item, tracklists } : item))} ids={projectOrder} tracks={demos.filter((demo) => demo.project === project)} onStarted={(id) => { detailAudioRef.current?.pause(); markDemoListened(id); }} renderFeedback={(id, session) => { const demo = demos.find((item) => item.id === id); return demo ? <ProjectTrackFeedback key={`${session}:${demo.uuid}`} demo={demo} account={account} listens={listens} onVote={(vote) => setListens((current) => [vote, ...current.filter((item) => item.eventUuid !== vote.eventUuid)])} /> : null; }} renderPlayer={(id, session, onEnded, onStarted) => { const demo = demos.find((d) => d.id === id); return demo ? <DemoFiles key={session + ":" + demo.uuid} uuid={demo.uuid} master={demo.audioName ? apiUrl("/api/audio/" + id) : undefined} apiUrl={apiUrl} autoPlay onEnded={onEnded} onStarted={onStarted} /> : null; }} />}
+          {view === "project" && project !== "Unsorted" && projectTab === "tracklist" && <ProjectTracklists key={project} mainIds={orders[project] ?? []} lists={projectVersions} selected={selectedTracklist?.id ?? ""} onSelect={(id) => setSelectedTracklists((current) => ({ ...current, [project]: id }))} onChange={(tracklists) => setProjects((current) => current.map((item) => item.name === project ? { ...item, tracklists } : item))} ids={projectOrder} tracks={demos.filter((demo) => demo.project === project)} onStarted={(id) => { detailAudioRef.current?.pause(); markDemoListened(id); }} renderFeedback={(id, session) => { const demo = demos.find((item) => item.id === id); return demo ? <ProjectTrackFeedback key={`${session}:${demo.uuid}`} demo={demo} account={account} listens={listens} onVote={(vote) => setListens((current) => [vote, ...current.filter((item) => item.eventUuid !== vote.eventUuid)])} /> : null; }} renderPlayer={(id, session, onEnded, onStarted) => { const demo = demos.find((d) => d.id === id); return demo ? <TracklistPlayer key={session + ":" + demo.uuid} src={apiUrl("/api/audio/" + id)} onEnded={onEnded} onStarted={onStarted} trimStart={demo.trimStartSeconds} trimEnd={demo.trimEndSeconds} onTrim={range=>setDemos(current=>current.map(item=>item.id===id?{...item,trimStartSeconds:range.start,trimEndSeconds:range.end}:item))} tags={<PhoneTags key={demo.uuid} tags={demo.tags} available={tags.map(tag=>tag.name)} disabled={false} remote={false} onSet={(tag,applied)=>editAuditionTag(id,tag,applied)}/>}><DemoFiles uuid={demo.uuid} master={demo.audioName ? apiUrl("/api/audio/" + id) : undefined} apiUrl={apiUrl} onEnded={onEnded} onStarted={onStarted} /></TracklistPlayer> : null; }} />}
           {statsFilters.length > 0 && view !== "stats" && <div className="stats-filter-notice" role="status"><span>FILTER</span><div className="stats-filter-copy"><p><strong>{statsFilteredDemos.length}</strong> matching demos from the statistics view.</p><div className="stats-filter-chips">{statsFilters.map((activeFilter) => <button type="button" className="stats-filter-chip" key={`${activeFilter.type}-${activeFilter.value}`} onClick={() => setStatsFilters(statsFilters.filter((filter) => filter !== activeFilter))} aria-label={`Remove ${activeFilter.label} filter`}>{activeFilter.label} ×</button>)}</div></div><button className="stats-filter-listen" disabled={!statsAuditionDemos.length} onClick={() => startRapidListen(statsAuditionDemos)}>{statsAuditionDemos.length ? `▶ Listen to ${statsAuditionDemos.length}` : statsFilteredDemos.length ? "No local audio" : "No matches"}</button><button onClick={() => setStatsFilters([])}>Clear all ×</button></div>}
 
 
