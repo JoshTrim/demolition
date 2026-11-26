@@ -8,6 +8,30 @@ import { promisify } from "node:util";
 
 const run = promisify(execFile);
 
+test("waveforms and playback share one fetch/decode; failures can retry and cancelled decodes are discarded", async () => {
+  const { AudioBufferCache } = await importTestModule("audio-buffer-cache");
+  const originalFetch=globalThis.fetch;
+  let fetches=0,decodes=0,fail=false;
+  const buffer={duration:12};
+  const context={async decodeAudioData(){decodes++;return buffer;}};
+  globalThis.fetch=async()=>{fetches++;if(fail)throw Error("offline");return {ok:true,arrayBuffer:async()=>new ArrayBuffer(4)};};
+  try {
+    const cache=new AudioBufferCache(),controller=new AbortController();
+    const a=cache.load("stem.wav",context,controller.signal),b=cache.load("stem.wav",context,controller.signal);
+    assert.equal(a,b);assert.equal(await a,buffer);
+    assert.equal(await cache.load("stem.wav",context,controller.signal),buffer);
+    assert.equal(fetches,1);assert.equal(decodes,1);
+    fail=true;await assert.rejects(cache.load("retry.wav",context,controller.signal),/offline/);
+    fail=false;assert.equal(await cache.load("retry.wav",context,controller.signal),buffer);
+    let finish;
+    const cancelled=new AbortController();
+    const pending=cache.load("cancelled.wav",{decodeAudioData:()=>new Promise(resolve=>{finish=resolve;})},cancelled.signal);
+    await new Promise(resolve=>setImmediate(resolve));cancelled.abort();finish(buffer);
+    await assert.rejects(pending);assert.equal(cache.get("cancelled.wav"),undefined);
+    cache.clear();assert.equal(cache.get("stem.wav"),undefined);
+  }finally{globalThis.fetch=originalFetch;}
+});
+
 test("tracklist audition exposes a compact transport and seek timeline without mounting the full editor", async () => {
   const { transpileModule, ModuleKind, JsxEmit, ScriptTarget } = await import("typescript");
   const { createElement } = await import("react");
