@@ -13,6 +13,15 @@ export async function setFingerprint(set: SetFiles) {
   return Array.from(new Uint8Array(digest), n => n.toString(16).padStart(2,"0")).join("");
 }
 export const playableFile = (name: string) => /\.(wav|aif|aiff|mp3|m4a|flac|ogg|opus|aac)$/i.test(name);
+export function setDemoName(value:string) {
+  return value.normalize("NFKC").trim().replace(/\.(wav|aif|aiff|mp3|m4a|flac|ogg|opus|aac)$/i, "").replace(/\s+/g," ").toLocaleLowerCase();
+}
+export function matchingSetDemos<T extends {title:string;audioName?:string}>(set:SetFiles,demos:T[],namesOnly=false):T[] {
+  const named=demos.filter(demo=>setDemoName(demo.title)===setDemoName(set.name));
+  // A matching folder title outranks export filenames such as master.wav.
+  if(named.length||namesOnly)return named;
+  return demos.filter(demo=>demo.audioName&&set.masters.some(file=>file.name.toLocaleLowerCase()===demo.audioName!.toLocaleLowerCase()));
+}
 export function defaultStemVersion(files: {kind:string;version_id?:string}[], versions:{id:string}[]) {
   return versions.find(version => files.some(file => file.version_id === version.id && file.kind === "stem"))?.id || "";
 }
@@ -46,6 +55,21 @@ export function scanSets(files: File[], bulk: boolean) {
     set[kind === "master" ? "masters" : kind as "stems" | "project"].push(file);
     sets.set(key, set);
   }
+  // A parent folder may also contain ordinary Ableton projects without a
+  // Master/Stems/Project wrapper. Only folders containing an .als set qualify.
+  if(bulk) {
+    const roots=[...new Set(files.flatMap(file=>{
+      const parts=safeParts(file);
+      return parts&&/\.als$/i.test(file.name)&&sectionIndex(parts)<0&&parts.length>1?[parts.slice(0,-1).join("/")]:[];
+    }))];
+    for(const root of roots) {
+      if([...sets.keys()].some(key=>key===root||key.startsWith(root+"/")||root.startsWith(key+"/")))continue;
+      // Prefer the outer project if its own nested backup contains more .als files.
+      if(roots.some(other=>other!==root&&root.startsWith(other+"/")))continue;
+      const project=files.filter(file=>{const parts=safeParts(file);return parts&&parts.join("/").startsWith(root+"/");});
+      sets.set(root,{name:root.split("/").at(-1)!,masters:[],stems:[],project});
+    }
+  }
   // A master may sit beside Stems/ and Project/, rather than inside Master/.
   // Only inspect files directly in the set root; never promote project samples
   // or audio in unrelated nested folders to master candidates.
@@ -58,7 +82,7 @@ export function scanSets(files: File[], bulk: boolean) {
       set = { name: parts[0], masters: [], stems: [], project: [] };
       sets.set(root, set);
     }
-    if (set) set.masters.push(file);
+    if (set && !set.project.includes(file)) set.masters.push(file);
   }
   // Attaching an ordinary DAW project folder does not require a Project/ wrapper.
   if (!sets.size && !bulk) {

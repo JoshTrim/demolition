@@ -8,6 +8,28 @@ import { promisify } from "node:util";
 
 const run = promisify(execFile);
 
+test("parent set folders match demo titles before generic exports and identify raw Ableton projects", async () => {
+  const {scanSets,matchingSetDemos,archiveProject}=await importTestModule("set-files");
+  const {unzipSync}=await import("fflate");
+  function file(path){const f=new File([path],path.split("/").at(-1));Object.defineProperty(f,"webkitRelativePath",{value:path});return f;}
+  const sets=scanSets([
+    "Batch/Northbound/Master/master.wav","Batch/Northbound/Stems/drums.wav","Batch/Northbound/Project/song.als",
+    "Batch/Low tide/Low tide.als","Batch/Low tide/Samples/hat.wav","Batch/Low tide/Backup/old.als","Batch/Low tide/.DS_Store",
+    "Batch/Unknown/Stems/bass.wav","Batch/Not a set/readme.txt",
+  ].map(file),true);
+  assert.deepEqual(sets.map(set=>set.name),["Low tide","Northbound","Unknown"]);
+  const demos=[{id:1,title:"Northbound",audioName:"master.wav"},{id:2,title:"Low tide.wav",audioName:"master.wav"}];
+  assert.deepEqual(matchingSetDemos(sets[1],demos).map(d=>d.id),[1]);
+  assert.deepEqual(matchingSetDemos({...sets[1],name:" NORTHBOUND "},demos,true).map(d=>d.id),[1]);
+  assert.deepEqual(matchingSetDemos(sets[0],demos,true).map(d=>d.id),[2]);
+  assert.equal(matchingSetDemos(sets[2],demos,true).length,0);
+  assert.equal(matchingSetDemos(sets[1],[...demos,{id:3,title:"northbound"}],true).length,2);
+  assert.equal(sets[0].masters.length,0);assert.equal(sets[0].project.length,3);
+  const zipped=unzipSync(new Uint8Array(await(await archiveProject(sets[0],true)).arrayBuffer()));
+  assert.ok(Object.keys(zipped).some(name=>name.endsWith("Samples/hat.wav")));
+  assert.ok(!Object.keys(zipped).some(name=>name.includes(".DS_Store")));
+});
+
 test("waveforms and playback share one fetch/decode; failures can retry and cancelled decodes are discarded", async () => {
   const { AudioBufferCache } = await importTestModule("audio-buffer-cache");
   const originalFetch=globalThis.fetch;
